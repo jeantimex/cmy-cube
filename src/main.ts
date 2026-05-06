@@ -88,6 +88,7 @@ uniform float absorptionStrength;
 uniform float saturation;
 uniform float bounces;
 uniform float reflectionBoost;
+uniform bool enableInternal;
 
 varying vec3 vWorldPosition;
 varying vec3 vLocalNormal;
@@ -159,7 +160,7 @@ void main() {
 
   // Trace up to 12 internal bounces to see Total Internal Reflection (TIR)
   for (int i = 0; i < 12; i++) {
-      if (float(i) >= bounces) break;
+      if (!enableInternal || float(i) >= bounces) break;
 
       // Move slightly along the ray to avoid re-intersecting the same face
       p += currentRayDir * 0.0001;
@@ -230,6 +231,7 @@ const cubeMaterial = new THREE.ShaderMaterial({
     saturation: { value: 1.25 },
     bounces: { value: 8.0 },
     reflectionBoost: { value: 1.0 },
+    enableInternal: { value: true },
   },
   vertexShader,
   fragmentShader,
@@ -257,6 +259,7 @@ const params = {
   saturation: 1.25,
   bounces: 8,
   reflectionBoost: 1.0,
+  enableInternal: true,
   lightX: 0,
   lightY: 20,
   lightZ: 10,
@@ -285,6 +288,9 @@ acrylicFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).
 acrylicFolder.open()
 
 const reflectionFolder = gui.addFolder('Internal Reflection')
+reflectionFolder.add(params, 'enableInternal').name('Enabled').onChange((val: boolean) => {
+  cubeMaterial.uniforms.enableInternal.value = val
+})
 reflectionFolder.add(params, 'bounces', 1, 12).step(1).name('Max Bounces').onChange((val: number) => {
   cubeMaterial.uniforms.bounces.value = val
 })
