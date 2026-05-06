@@ -37,6 +37,7 @@ const fragmentShader = `
   uniform vec3 cameraPos;
   uniform float cubeSize;
   uniform mat4 inverseModelMatrix;
+  uniform float ior;
 
   varying vec3 vWorldPosition;
 
@@ -46,7 +47,7 @@ const fragmentShader = `
   const vec3 YELLOW = vec3(1.0, 1.0, 0.0);
   const vec3 WHITE = vec3(1.0, 1.0, 1.0);
 
-  // Ray-box intersection for a box centered at origin with half-size
+  // Ray-box intersection
   vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
     vec3 invDir = 1.0 / rayDir;
     vec3 t1 = (-boxHalfSize - rayOrigin) * invDir;
@@ -58,58 +59,76 @@ const fragmentShader = `
     return vec2(tNear, tFar);
   }
 
-  // Get face normal from hit point (in local space)
   vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
     vec3 p = hitPoint / boxHalfSize;
     vec3 absP = abs(p);
     float maxComp = max(max(absP.x, absP.y), absP.z);
-
     if (absP.x >= maxComp - 0.001) return vec3(sign(p.x), 0.0, 0.0);
     if (absP.y >= maxComp - 0.001) return vec3(0.0, sign(p.y), 0.0);
     return vec3(0.0, 0.0, sign(p.z));
   }
 
-  // Get CMY color for a face based on its normal
   vec3 getFaceColor(vec3 normal) {
     vec3 absNormal = abs(normal);
-    // X-axis faces (left/right) = Yellow
+    // Yellow on X, Magenta on Y, Cyan on Z
     if (absNormal.x > 0.5) return YELLOW;
-    // Y-axis faces (top/bottom) = Magenta
     if (absNormal.y > 0.5) return MAGENTA;
-    // Z-axis faces (front/back) = Cyan
     return CYAN;
   }
 
   void main() {
-    // Transform ray to local (object) space for axis-aligned box intersection
     vec3 localCameraPos = (inverseModelMatrix * vec4(cameraPos, 1.0)).xyz;
     vec3 localWorldPos = (inverseModelMatrix * vec4(vWorldPosition, 1.0)).xyz;
 
     vec3 rayOrigin = localCameraPos;
-    vec3 rayDir = normalize(localWorldPos - localCameraPos);
+    vec3 viewDir = normalize(localWorldPos - localCameraPos);
     vec3 boxHalfSize = vec3(cubeSize * 0.5);
 
-    // Find intersection with outer box
-    vec2 tOuter = intersectBox(rayOrigin, rayDir, boxHalfSize);
-
+    vec2 tOuter = intersectBox(rayOrigin, viewDir, boxHalfSize);
     if (tOuter.x > tOuter.y || tOuter.y < 0.0) {
       discard;
     }
 
-    // Entry and exit points (in local space)
-    vec3 entryPoint = rayOrigin + rayDir * max(tOuter.x, 0.0);
-    vec3 exitPoint = rayOrigin + rayDir * tOuter.y;
+    vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
+    vec3 n = getFaceNormal(p, boxHalfSize);
+    
+    // 1. Fresnel reflection on the first surface
+    float cosTheta = dot(-viewDir, n);
+    float f0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
+    float fresnel = f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
+    
+    // Specular highlight from a dummy light source
+    vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
+    vec3 halfDir = normalize(lightDir - viewDir);
+    float spec = pow(max(dot(n, halfDir), 0.0), 32.0);
+    vec3 specular = vec3(spec) * 0.5;
 
-    // Get face colors at entry and exit
-    vec3 entryNormal = getFaceNormal(entryPoint, boxHalfSize);
-    vec3 exitNormal = getFaceNormal(exitPoint, boxHalfSize);
+    // 2. Initial filter from front face
+    vec3 filterColor = WHITE * getFaceColor(n);
 
-    vec3 entryColor = getFaceColor(entryNormal);
-    vec3 exitColor = getFaceColor(exitNormal);
+    // 3. Refract into the cube
+    vec3 currentRayDir = refract(viewDir, n, 1.0 / ior);
+    
+    // Trace up to 4 internal bounces
+    for (int i = 0; i < 4; i++) {
+        p += currentRayDir * 0.001;
+        vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
+        p += currentRayDir * tInner.y;
+        vec3 nextN = getFaceNormal(p, boxHalfSize);
+        
+        filterColor *= getFaceColor(nextN);
+        
+        vec3 nextRayDir = refract(currentRayDir, -nextN, ior);
+        if (length(nextRayDir) > 0.1) {
+            currentRayDir = nextRayDir;
+            break;
+        } else {
+            currentRayDir = reflect(currentRayDir, -nextN);
+        }
+    }
 
-    // Subtractive color mixing: multiply the colors
-    // Start with white light, filter through each face
-    vec3 finalColor = WHITE * entryColor * exitColor;
+    // Mix refraction with specular reflection using Fresnel
+    vec3 finalColor = mix(filterColor, WHITE, fresnel) + specular;
 
     gl_FragColor = vec4(finalColor, 1.0);
   }
@@ -120,6 +139,7 @@ const cubeMaterial = new THREE.ShaderMaterial({
     cameraPos: { value: camera.position },
     cubeSize: { value: 2.0 },
     inverseModelMatrix: { value: new THREE.Matrix4() },
+    ior: { value: 1.49 }, // Standard acrylic IOR
   },
   vertexShader,
   fragmentShader,
@@ -138,6 +158,7 @@ const params = {
   rotationX: 0,
   rotationY: 0,
   rotationZ: 0,
+  ior: 1.49,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -146,7 +167,12 @@ rotationFolder.add(params, 'rotationY', -Math.PI, Math.PI).name('Y').step(0.01)
 rotationFolder.add(params, 'rotationZ', -Math.PI, Math.PI).name('Z').step(0.01)
 rotationFolder.open()
 
+gui.add(params, 'ior', 1.0, 2.0).name('IOR').onChange((val: number) => {
+  cubeMaterial.uniforms.ior.value = val
+})
+
 const controls = new OrbitControls(camera, renderer.domElement)
+
 controls.enableDamping = true
 controls.enablePan = false
 controls.target.set(0, 0, 0)
