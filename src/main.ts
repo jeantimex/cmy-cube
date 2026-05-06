@@ -183,7 +183,7 @@ const fragmentShader = `
     float fresnel = pow(1.0 - max(dot(lightingNormal, viewOut), 0.0), 3.0);
     vec3 halfDir = normalize(localLightDir + viewOut);
     float specular = pow(max(dot(lightingNormal, halfDir), 0.0), 120.0);
-    float bevelCatch = pow(max(dot(lightingNormal, normalize(vec3(-0.35, 0.82, 0.45))), 0.0), 36.0);
+    float bevelCatch = pow(max(dot(lightingNormal, localLightDir), 0.0), 36.0);
 
     float thickness = clamp(pathLength / cubeSize, 0.0, 1.0);
     vec3 acrylicColor = mix(WHITE, filterColor, 0.78 + thickness * 0.18);
@@ -234,6 +234,9 @@ const params = {
   opacity: 0.58,
   absorption: 0.62,
   saturation: 1.25,
+  lightX: 0,
+  lightY: 20,
+  lightZ: 10,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -257,6 +260,17 @@ acrylicFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).
   cubeMaterial.uniforms.saturation.value = val
 })
 acrylicFolder.open()
+
+const updateLight = () => {
+  directionalLight.position.set(params.lightX, params.lightY, params.lightZ)
+  cubeMaterial.uniforms.lightDirection.value.copy(directionalLight.position).normalize()
+}
+
+const lightFolder = gui.addFolder('Light Direction')
+lightFolder.add(params, 'lightX', -20, 20).name('X').step(0.1).onChange(updateLight)
+lightFolder.add(params, 'lightY', -20, 20).name('Y').step(0.1).onChange(updateLight)
+lightFolder.add(params, 'lightZ', -20, 20).name('Z').step(0.1).onChange(updateLight)
+lightFolder.open()
 
 const controls = new OrbitControls(camera, renderer.domElement)
 
