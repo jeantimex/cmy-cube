@@ -47,23 +47,25 @@ const warmLightColor = new THREE.Color(0xffd2a1)
 
 const groundUniforms = {
   lightDirection: { value: directionalLight.position.clone().normalize() },
+  lightColor: { value: directionalLight.color },
+  lightIntensity: { value: directionalLight.intensity },
+  ambientIntensity: { value: hemiLight.intensity },
   cubeSize: { value: 2.0 },
   inverseModelMatrix: { value: new THREE.Matrix4() },
   absorptionStrength: { value: 0.62 },
   brightness: { value: 1.2 },
-  innerBrightness: { value: 1.5 },
-  outerDarkness: { value: 0.1 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
 groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.lightDirection = groundUniforms.lightDirection
+  shader.uniforms.lightColor = groundUniforms.lightColor
+  shader.uniforms.lightIntensity = groundUniforms.lightIntensity
+  shader.uniforms.ambientIntensity = groundUniforms.ambientIntensity
   shader.uniforms.cubeSize = groundUniforms.cubeSize
   shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
   shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
   shader.uniforms.brightness = groundUniforms.brightness
-  shader.uniforms.innerBrightness = groundUniforms.innerBrightness
-  shader.uniforms.outerDarkness = groundUniforms.outerDarkness
 
   shader.vertexShader = shader.vertexShader.replace(
     '#include <common>',
@@ -80,12 +82,13 @@ groundMaterial.onBeforeCompile = (shader) => {
     '#include <common>',
     `#include <common>
     uniform vec3 lightDirection;
+    uniform vec3 lightColor;
+    uniform float lightIntensity;
+    uniform float ambientIntensity;
     uniform float cubeSize;
     uniform mat4 inverseModelMatrix;
     uniform float absorptionStrength;
     uniform float brightness;
-    uniform float innerBrightness;
-    uniform float outerDarkness;
     varying vec3 vWorldPosition;
 
     const vec3 CYAN = vec3(0.0, 1.0, 1.0);
@@ -155,13 +158,15 @@ groundMaterial.onBeforeCompile = (shader) => {
     if (t.x < t.y && t.y > 0.0) {
       float bouncesNum = 0.0;
       vec3 shadowFilter = traceShadow(localPos, localLightDir, boxHalfSize, absorptionStrength, bouncesNum);
-      
-      vec3 result;
-      if (bouncesNum < 0.5) {
-        result = shadowFilter * brightness * innerBrightness;
-      } else {
-        result = mix(vec3(outerDarkness), shadowFilter * brightness, 0.2);
-      }
+      float normalizedLight = clamp(lightIntensity / 3.0, 0.0, 3.0);
+      float normalizedAmbient = clamp(ambientIntensity / 3.0, 0.0, 2.0);
+      float upwardLight = clamp(localLightDir.y, 0.0, 1.0);
+      float ambientFloor = 0.14 + normalizedAmbient * 0.22;
+      float directStrength = normalizedLight * mix(0.45, 1.25, upwardLight);
+      vec3 tintedTransmission = shadowFilter * mix(WHITE, lightColor, 0.6);
+      vec3 brightCaustic = tintedTransmission * brightness * (0.85 + directStrength * 0.55);
+      vec3 attenuatedShadow = mix(vec3(ambientFloor), tintedTransmission * brightness, 0.18 + normalizedAmbient * 0.08);
+      vec3 result = mix(brightCaustic, attenuatedShadow, step(0.5, bouncesNum));
       
       gl_FragColor.rgb *= result;
     }`
@@ -369,8 +374,6 @@ const params = {
   reflectionBoost: 1.0,
   enableInternal: true,
   brightness: 1.2,
-  innerBrightness: 1.5,
-  outerDarkness: 0.1,
   lightAzimuthDegrees: 0,
   lightElevationDegrees: 63,
   lightDistance: baseLightDistance,
@@ -419,15 +422,6 @@ reflectionFolder.add(params, 'reflectionBoost', 0.0, 2.0).name('Reflection Boost
 })
 reflectionFolder.open()
 
-const shadowFolder = gui.addFolder('Shadows')
-shadowFolder.add(params, 'innerBrightness', 0.5, 3.0).name('Inner Brightness').onChange((val: number) => {
-  groundUniforms.innerBrightness.value = val
-})
-shadowFolder.add(params, 'outerDarkness', 0.0, 0.5).name('Outer Darkness').onChange((val: number) => {
-  groundUniforms.outerDarkness.value = val
-})
-shadowFolder.open()
-
 const updateLight = () => {
   const azimuth = THREE.MathUtils.degToRad(params.lightAzimuthDegrees)
   const elevation = THREE.MathUtils.degToRad(params.lightElevationDegrees)
@@ -451,6 +445,7 @@ const updateLightColor = () => {
 
   directionalLight.color.copy(color)
   cubeMaterial.uniforms.lightColor.value.copy(color)
+  groundUniforms.lightColor.value.copy(color)
 }
 
 const updateLightBrightness = () => {
@@ -459,10 +454,12 @@ const updateLightBrightness = () => {
 
   directionalLight.intensity = intensity
   cubeMaterial.uniforms.lightIntensity.value = intensity
+  groundUniforms.lightIntensity.value = intensity
 }
 
 const updateAmbientBrightness = () => {
   hemiLight.intensity = params.ambientBrightness
+  groundUniforms.ambientIntensity.value = params.ambientBrightness
 }
 
 const lightFolder = gui.addFolder('Light Orbit')
