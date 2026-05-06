@@ -4,6 +4,166 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import GUI from 'lil-gui'
 
+const installPCSSShadows = () => {
+  THREE.ShaderChunk.shadowmap_pars_fragment = THREE.ShaderChunk.shadowmap_pars_fragment.replace(
+    `#else // SHADOWMAP_TYPE_BASIC
+
+		float getShadow( sampler2D shadowMap, vec2 shadowMapSize, float shadowIntensity, float shadowBias, float shadowRadius, vec4 shadowCoord ) {
+
+			float shadow = 1.0;
+
+			shadowCoord.xyz /= shadowCoord.w;
+
+			#ifdef USE_REVERSED_DEPTH_BUFFER
+
+				shadowCoord.z -= shadowBias;
+
+			#else
+
+				shadowCoord.z += shadowBias;
+
+			#endif
+
+			bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
+			bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
+
+			if ( frustumTest ) {
+
+				float depth = texture2D( shadowMap, shadowCoord.xy ).r;
+
+				#ifdef USE_REVERSED_DEPTH_BUFFER
+
+					shadow = step( depth, shadowCoord.z );
+
+				#else
+
+					shadow = step( shadowCoord.z, depth );
+
+				#endif
+
+			}
+
+			return mix( 1.0, shadow, shadowIntensity );
+
+		}`,
+    `#else // SHADOWMAP_TYPE_BASIC
+
+		float pcssRandom( vec2 seed ) {
+
+			return fract( sin( dot( seed, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+
+		}
+
+		vec2 pcssDiskSample( int sampleIndex, int samplesCount, float angle ) {
+
+			const float goldenAngle = 2.399963229728653;
+			float radius = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
+			float theta = float( sampleIndex ) * goldenAngle + angle;
+			return vec2( cos( theta ), sin( theta ) ) * radius;
+
+		}
+
+		float getShadow( sampler2D shadowMap, vec2 shadowMapSize, float shadowIntensity, float shadowBias, float shadowRadius, vec4 shadowCoord ) {
+
+			float shadow = 1.0;
+
+			shadowCoord.xyz /= shadowCoord.w;
+
+			#ifdef USE_REVERSED_DEPTH_BUFFER
+
+				shadowCoord.z -= shadowBias;
+
+			#else
+
+				shadowCoord.z += shadowBias;
+
+			#endif
+
+			bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
+			bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
+
+			if ( frustumTest ) {
+
+				vec2 texelSize = vec2( 1.0 ) / shadowMapSize;
+				float lightSize = max( shadowRadius, 0.001 );
+				float searchRadius = lightSize * texelSize.x * 7.0;
+				float rotation = pcssRandom( gl_FragCoord.xy ) * PI2;
+				float blockerDepth = 0.0;
+				float blockers = 0.0;
+
+				for ( int i = 0; i < 16; i ++ ) {
+
+					float sampleDepth = texture2D( shadowMap, shadowCoord.xy + pcssDiskSample( i, 16, rotation ) * searchRadius ).r;
+
+					#ifdef USE_REVERSED_DEPTH_BUFFER
+
+						if ( sampleDepth > shadowCoord.z ) {
+
+							blockerDepth += sampleDepth;
+							blockers += 1.0;
+
+						}
+
+					#else
+
+						if ( sampleDepth < shadowCoord.z ) {
+
+							blockerDepth += sampleDepth;
+							blockers += 1.0;
+
+						}
+
+					#endif
+
+				}
+
+				if ( blockers > 0.0 ) {
+
+					float averageBlockerDepth = blockerDepth / blockers;
+
+					#ifdef USE_REVERSED_DEPTH_BUFFER
+
+						float penumbra = ( averageBlockerDepth - shadowCoord.z ) / max( averageBlockerDepth, 0.0001 );
+
+					#else
+
+						float penumbra = ( shadowCoord.z - averageBlockerDepth ) / max( averageBlockerDepth, 0.0001 );
+
+					#endif
+
+					float filterRadius = lightSize * ( 0.85 + penumbra * 18.0 ) * texelSize.x;
+					float sum = 0.0;
+
+					for ( int i = 0; i < 32; i ++ ) {
+
+						float sampleDepth = texture2D( shadowMap, shadowCoord.xy + pcssDiskSample( i, 32, rotation ) * filterRadius ).r;
+
+						#ifdef USE_REVERSED_DEPTH_BUFFER
+
+							sum += step( sampleDepth, shadowCoord.z );
+
+						#else
+
+							sum += step( shadowCoord.z, sampleDepth );
+
+						#endif
+
+					}
+
+					shadow = sum / 32.0;
+
+				}
+
+			}
+
+			return mix( 1.0, shadow, shadowIntensity );
+
+		}`
+  )
+}
+
+installPCSSShadows()
+
 const app = document.querySelector<HTMLDivElement>('#app')
 
 if (!app) {
@@ -17,7 +177,7 @@ scene.fog = new THREE.Fog(0xa0a0a0, 4, 20)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-renderer.shadowMap.enabled = true
+renderer.shadowMap.enabled = false
 mount.appendChild(renderer.domElement)
 
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100)
@@ -33,11 +193,17 @@ scene.add(hemiLight)
 
 const directionalLight = new THREE.DirectionalLight(0xffffff, 3)
 directionalLight.position.set(0, 20, 10)
-directionalLight.castShadow = true
+directionalLight.castShadow = false
+directionalLight.shadow.mapSize.set(2048, 2048)
+directionalLight.shadow.camera.near = 0.5
+directionalLight.shadow.camera.far = 30
 directionalLight.shadow.camera.top = 2
 directionalLight.shadow.camera.bottom = -2
 directionalLight.shadow.camera.left = -2
 directionalLight.shadow.camera.right = 2
+directionalLight.shadow.bias = -0.0001
+directionalLight.shadow.normalBias = 0.02
+directionalLight.shadow.radius = 18
 scene.add(directionalLight)
 
 const baseLightDistance = directionalLight.position.length()
@@ -54,6 +220,9 @@ const groundUniforms = {
   inverseModelMatrix: { value: new THREE.Matrix4() },
   absorptionStrength: { value: 0.62 },
   brightness: { value: 1.2 },
+  enableCausticShadow: { value: true },
+  softShadowSize: { value: 0.08 },
+  softShadowOpacity: { value: 0.35 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
@@ -66,16 +235,19 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
   shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
   shader.uniforms.brightness = groundUniforms.brightness
+  shader.uniforms.enableCausticShadow = groundUniforms.enableCausticShadow
+  shader.uniforms.softShadowSize = groundUniforms.softShadowSize
+  shader.uniforms.softShadowOpacity = groundUniforms.softShadowOpacity
 
   shader.vertexShader = shader.vertexShader.replace(
     '#include <common>',
     `#include <common>
-    varying vec3 vWorldPosition;`
+    varying vec3 vGroundWorldPosition;`
   )
   shader.vertexShader = shader.vertexShader.replace(
-    '#include <worldpos_vertex>',
-    `#include <worldpos_vertex>
-    vWorldPosition = worldPosition.xyz;`
+    '#include <begin_vertex>',
+    `#include <begin_vertex>
+    vGroundWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;`
   )
 
   shader.fragmentShader = shader.fragmentShader.replace(
@@ -89,7 +261,10 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform mat4 inverseModelMatrix;
     uniform float absorptionStrength;
     uniform float brightness;
-    varying vec3 vWorldPosition;
+    uniform bool enableCausticShadow;
+    uniform float softShadowSize;
+    uniform float softShadowOpacity;
+    varying vec3 vGroundWorldPosition;
 
     const vec3 CYAN = vec3(0.0, 1.0, 1.0);
     const vec3 MAGENTA = vec3(1.0, 0.0, 1.0);
@@ -123,6 +298,40 @@ groundMaterial.onBeforeCompile = (shader) => {
       return CYAN;
     }
 
+    float hardBoxShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
+      vec2 t = intersectBox(rayOrigin, rayDir, boxHalfSize);
+      return (t.x < t.y && t.y > 0.0) ? 1.0 : 0.0;
+    }
+
+    float shadowNoise(vec2 seed) {
+      return fract(sin(dot(seed, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    vec2 diskSample(int sampleIndex, int samplesCount, float rotation) {
+      const float goldenAngle = 2.399963229728653;
+      float radius = sqrt((float(sampleIndex) + 0.5) / float(samplesCount));
+      float theta = float(sampleIndex) * goldenAngle + rotation;
+      return vec2(cos(theta), sin(theta)) * radius;
+    }
+
+    float softBoxShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float spread) {
+      if (spread <= 0.0001) return hardBoxShadow(rayOrigin, rayDir, boxHalfSize);
+
+      vec3 up = abs(rayDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 tangent = normalize(cross(up, rayDir));
+      vec3 bitangent = cross(rayDir, tangent);
+      float rotation = shadowNoise(gl_FragCoord.xy) * 6.28318530718;
+      float occlusion = 0.0;
+
+      for (int i = 0; i < 96; i++) {
+        vec2 sampleOffset = diskSample(i, 96, rotation) * spread;
+        vec3 sampleDir = normalize(rayDir + tangent * sampleOffset.x + bitangent * sampleOffset.y);
+        occlusion += hardBoxShadow(rayOrigin, sampleDir, boxHalfSize);
+      }
+
+      return smoothstep(0.0, 1.0, occlusion / 96.0);
+    }
+
     vec3 traceShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float absStrength, out float bounceCount) {
       vec3 p = rayOrigin;
       vec3 filterColor = WHITE;
@@ -151,11 +360,14 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.fragmentShader = shader.fragmentShader.replace(
     '#include <dithering_fragment>',
     `#include <dithering_fragment>
-    vec3 localPos = (inverseModelMatrix * vec4(vWorldPosition, 1.0)).xyz;
+    vec3 localPos = (inverseModelMatrix * vec4(vGroundWorldPosition, 1.0)).xyz;
     vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
     vec3 boxHalfSize = vec3(cubeSize * 0.5);
+    float softOcclusion = softBoxShadow(localPos, localLightDir, boxHalfSize, softShadowSize);
+    gl_FragColor.rgb *= mix(1.0, 1.0 - softShadowOpacity, softOcclusion);
+
     vec2 t = intersectBox(localPos, localLightDir, boxHalfSize);
-    if (t.x < t.y && t.y > 0.0) {
+    if (enableCausticShadow && t.x < t.y && t.y > 0.0) {
       float bouncesNum = 0.0;
       vec3 shadowFilter = traceShadow(localPos, localLightDir, boxHalfSize, absorptionStrength, bouncesNum);
       float normalizedLight = clamp(lightIntensity / 3.0, 0.0, 3.0);
@@ -179,7 +391,7 @@ const ground = new THREE.Mesh(
 )
 ground.rotation.x = -Math.PI / 2
 ground.position.y = -1
-ground.receiveShadow = true
+ground.receiveShadow = false
 scene.add(ground)
 
 const grid = new THREE.GridHelper(40, 20, 0x000000, 0x000000)
@@ -358,7 +570,7 @@ const cube = new THREE.Mesh(
   new RoundedBoxGeometry(2, 2, 2, 8, 0.035),
   cubeMaterial,
 )
-cube.castShadow = true
+cube.castShadow = false
 scene.add(cube)
 
 const gui = new GUI()
@@ -373,6 +585,7 @@ const params = {
   bounces: 8,
   reflectionBoost: 1.0,
   enableInternal: true,
+  enableCausticShadow: true,
   brightness: 1.2,
   lightAzimuthDegrees: 0,
   lightElevationDegrees: 63,
@@ -380,6 +593,8 @@ const params = {
   lightBrightness: directionalLight.intensity,
   lightWarmth: 0.5,
   ambientBrightness: hemiLight.intensity,
+  shadowSoftness: groundUniforms.softShadowSize.value,
+  shadowOpacity: groundUniforms.softShadowOpacity.value,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -391,6 +606,10 @@ rotationFolder.open()
 gui.add(params, 'brightness', 0.5, 3.0).name('Brightness').onChange((val: number) => {
   cubeMaterial.uniforms.brightness.value = val
   groundUniforms.brightness.value = val
+})
+
+gui.add(params, 'enableCausticShadow').name('Caustic Shadow').onChange((val: boolean) => {
+  groundUniforms.enableCausticShadow.value = val
 })
 
 gui.add(params, 'ior', 1.0, 2.0).name('IOR').onChange((val: number) => {
@@ -473,6 +692,15 @@ lightAppearanceFolder.add(params, 'lightBrightness', 0, 8).name('Brightness').st
 lightAppearanceFolder.add(params, 'lightWarmth', 0, 1).name('Warmth').step(0.01).onChange(updateLightColor)
 lightAppearanceFolder.add(params, 'ambientBrightness', 0, 6).name('Ambient').step(0.1).onChange(updateAmbientBrightness)
 lightAppearanceFolder.open()
+
+const shadowFolder = gui.addFolder('Soft Shadow')
+shadowFolder.add(params, 'shadowSoftness', 0.0, 0.22).name('Light Size').step(0.005).onChange((val: number) => {
+  groundUniforms.softShadowSize.value = val
+})
+shadowFolder.add(params, 'shadowOpacity', 0.0, 0.75).name('Opacity').step(0.01).onChange((val: number) => {
+  groundUniforms.softShadowOpacity.value = val
+})
+shadowFolder.open()
 
 updateLightColor()
 
