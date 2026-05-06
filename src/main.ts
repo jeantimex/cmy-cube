@@ -40,6 +40,11 @@ directionalLight.shadow.camera.left = -2
 directionalLight.shadow.camera.right = 2
 scene.add(directionalLight)
 
+const baseLightDistance = directionalLight.position.length()
+const coolLightColor = new THREE.Color(0xd8ecff)
+const neutralLightColor = new THREE.Color(0xffffff)
+const warmLightColor = new THREE.Color(0xffd2a1)
+
 const groundUniforms = {
   lightDirection: { value: directionalLight.position.clone().normalize() },
   cubeSize: { value: 2.0 },
@@ -203,6 +208,8 @@ const vertexShader = `
 const fragmentShader = `
 uniform vec3 cameraPos;
 uniform vec3 lightDirection;
+uniform vec3 lightColor;
+uniform float lightIntensity;
 uniform float cubeSize;
 uniform mat4 inverseModelMatrix;
 uniform float ior;
@@ -301,14 +308,17 @@ void main() {
   vec3 halfDir = normalize(localLightDir + vOut);
   float specular = pow(max(dot(lightingNormal, halfDir), 0.0), 120.0);
   float bevelCatch = pow(max(dot(lightingNormal, localLightDir), 0.0), 36.0);
+  float normalizedLightIntensity = lightIntensity / 3.0;
+  vec3 directLightColor = mix(WHITE, lightColor, 0.55);
 
   float thickness = clamp(totalPathLength / cubeSize, 0.0, 1.5);
   vec3 acrylicColor = mix(WHITE, filterColor, 0.7 + thickness * 0.25);
   acrylicColor = saturateColor(acrylicColor, saturation);
 
-  float softLight = 0.5 + lambert * 0.5;
+  float softLight = 0.5 + lambert * normalizedLightIntensity * 0.5;
   vec3 color = acrylicColor * softLight * brightness;
-  color += WHITE * (fresnel * 0.4 + specular * 0.7 + bevelCatch * 0.2);
+  color *= mix(WHITE, directLightColor, lambert * 0.45);
+  color += directLightColor * (fresnel * 0.4 + specular * normalizedLightIntensity * 0.7 + bevelCatch * normalizedLightIntensity * 0.2);
   color = mix(color, WHITE, 0.02);
   float alpha = clamp(opacity + thickness * 0.15 + fresnel * 0.4 + specular * 0.3, 0.0, 0.98);
   gl_FragColor = vec4(color, alpha);
@@ -319,6 +329,8 @@ const cubeMaterial = new THREE.ShaderMaterial({
   uniforms: {
     cameraPos: { value: camera.position },
     lightDirection: { value: directionalLight.position.clone().normalize() },
+    lightColor: { value: directionalLight.color },
+    lightIntensity: { value: directionalLight.intensity },
     cubeSize: { value: 2.0 },
     inverseModelMatrix: { value: new THREE.Matrix4() },
     ior: { value: 1.49 },
@@ -361,7 +373,10 @@ const params = {
   outerDarkness: 0.1,
   lightAzimuthDegrees: 0,
   lightElevationDegrees: 63,
-  lightDistance: directionalLight.position.length(),
+  lightDistance: baseLightDistance,
+  lightBrightness: directionalLight.intensity,
+  lightWarmth: 0.5,
+  ambientBrightness: hemiLight.intensity,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -426,6 +441,28 @@ const updateLight = () => {
   const dir = directionalLight.position.clone().normalize()
   cubeMaterial.uniforms.lightDirection.value.copy(dir)
   groundUniforms.lightDirection.value.copy(dir)
+  updateLightBrightness()
+}
+
+const updateLightColor = () => {
+  const color = params.lightWarmth < 0.5
+    ? coolLightColor.clone().lerp(neutralLightColor, params.lightWarmth * 2)
+    : neutralLightColor.clone().lerp(warmLightColor, (params.lightWarmth - 0.5) * 2)
+
+  directionalLight.color.copy(color)
+  cubeMaterial.uniforms.lightColor.value.copy(color)
+}
+
+const updateLightBrightness = () => {
+  const distanceFalloff = THREE.MathUtils.clamp(baseLightDistance / params.lightDistance, 0.35, 3)
+  const intensity = params.lightBrightness * distanceFalloff
+
+  directionalLight.intensity = intensity
+  cubeMaterial.uniforms.lightIntensity.value = intensity
+}
+
+const updateAmbientBrightness = () => {
+  hemiLight.intensity = params.ambientBrightness
 }
 
 const lightFolder = gui.addFolder('Light Orbit')
@@ -433,6 +470,14 @@ lightFolder.add(params, 'lightAzimuthDegrees', 0, 360).name('Azimuth').step(1).o
 lightFolder.add(params, 'lightElevationDegrees', -89, 89).name('Elevation').step(1).onChange(updateLight)
 lightFolder.add(params, 'lightDistance', 3, 40).name('Distance').step(0.1).onChange(updateLight)
 lightFolder.open()
+
+const lightAppearanceFolder = gui.addFolder('Light Appearance')
+lightAppearanceFolder.add(params, 'lightBrightness', 0, 8).name('Brightness').step(0.1).onChange(updateLightBrightness)
+lightAppearanceFolder.add(params, 'lightWarmth', 0, 1).name('Warmth').step(0.01).onChange(updateLightColor)
+lightAppearanceFolder.add(params, 'ambientBrightness', 0, 6).name('Ambient').step(0.1).onChange(updateAmbientBrightness)
+lightAppearanceFolder.open()
+
+updateLightColor()
 
 const controls = new OrbitControls(camera, renderer.domElement)
 controls.enableDamping = true
