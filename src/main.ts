@@ -11,16 +11,57 @@ if (!app) {
 
 const mount = app
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0xffffff)
+scene.background = new THREE.Color(0xa0a0a0)
+scene.fog = new THREE.Fog(0xa0a0a0, 4, 20)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
-renderer.setClearColor(0xffffff, 1)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+renderer.shadowMap.enabled = true
 mount.appendChild(renderer.domElement)
 
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100)
-camera.position.set(3.2, 2.35, 4)
+const desktopCameraPosition = new THREE.Vector3(3.2, 2.35, 4)
+const mobileCameraPosition = new THREE.Vector3(3.8, 3.4, 9.2)
+
+camera.position.copy(desktopCameraPosition)
 camera.lookAt(0, 0, 0)
+
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 3)
+hemiLight.position.set(0, 20, 0)
+scene.add(hemiLight)
+
+const directionalLight = new THREE.DirectionalLight(0xffffff, 3)
+directionalLight.position.set(0, 20, 10)
+directionalLight.castShadow = true
+directionalLight.shadow.camera.top = 2
+directionalLight.shadow.camera.bottom = -2
+directionalLight.shadow.camera.left = -2
+directionalLight.shadow.camera.right = 2
+scene.add(directionalLight)
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false }),
+)
+ground.rotation.x = -Math.PI / 2
+ground.position.y = -1
+ground.receiveShadow = true
+scene.add(ground)
+
+const grid = new THREE.GridHelper(40, 20, 0x000000, 0x000000)
+grid.position.y = -0.999
+
+if (Array.isArray(grid.material)) {
+  grid.material.forEach((material) => {
+    material.opacity = 0.2
+    material.transparent = true
+  })
+} else {
+  grid.material.opacity = 0.2
+  grid.material.transparent = true
+}
+
+scene.add(grid)
 
 // CMY cube with ray-traced color mixing
 const vertexShader = `
@@ -136,6 +177,7 @@ const cube = new THREE.Mesh(
   new THREE.BoxGeometry(2, 2, 2),
   cubeMaterial,
 )
+cube.castShadow = true
 scene.add(cube)
 
 // GUI for rotation controls
@@ -166,11 +208,20 @@ controls.update()
 
 function resize() {
   const { clientWidth, clientHeight } = mount
+  const isNarrow = clientWidth < 640
 
   camera.aspect = clientWidth / clientHeight
+  camera.position.copy(isNarrow ? mobileCameraPosition : desktopCameraPosition)
+  camera.lookAt(controls.target)
   camera.updateProjectionMatrix()
 
   renderer.setSize(clientWidth, clientHeight, false)
+
+  if (isNarrow) {
+    gui.close()
+  } else {
+    gui.open()
+  }
 }
 
 function animate() {
