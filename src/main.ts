@@ -214,7 +214,7 @@ const cubeMaterial = new THREE.ShaderMaterial({
   fragmentShader,
   side: THREE.DoubleSide,
   transparent: true,
-  depthWrite: false,
+  depthWrite: true,
 })
 
 const cube = new THREE.Mesh(
