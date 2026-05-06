@@ -40,9 +40,118 @@ directionalLight.shadow.camera.left = -2
 directionalLight.shadow.camera.right = 2
 scene.add(directionalLight)
 
+const groundUniforms = {
+  lightDirection: { value: directionalLight.position.clone().normalize() },
+  cubeSize: { value: 2.0 },
+  inverseModelMatrix: { value: new THREE.Matrix4() },
+  absorptionStrength: { value: 0.62 },
+  brightness: { value: 1.0 },
+}
+
+const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
+groundMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.lightDirection = groundUniforms.lightDirection
+  shader.uniforms.cubeSize = groundUniforms.cubeSize
+  shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
+  shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
+  shader.uniforms.brightness = groundUniforms.brightness
+
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <common>',
+    `#include <common>
+    varying vec3 vWorldPosition;`
+  )
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <worldpos_vertex>',
+    `#include <worldpos_vertex>
+    vWorldPosition = worldPosition.xyz;`
+  )
+
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <common>',
+    `#include <common>
+    uniform vec3 lightDirection;
+    uniform float cubeSize;
+    uniform mat4 inverseModelMatrix;
+    uniform float absorptionStrength;
+    uniform float brightness;
+    varying vec3 vWorldPosition;
+
+    const vec3 CYAN = vec3(0.0, 1.0, 1.0);
+    const vec3 MAGENTA = vec3(1.0, 0.0, 1.0);
+    const vec3 YELLOW = vec3(1.0, 1.0, 0.0);
+    const vec3 WHITE = vec3(1.0, 1.0, 1.0);
+
+    vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
+      vec3 invDir = 1.0 / rayDir;
+      vec3 t1 = (-boxHalfSize - rayOrigin) * invDir;
+      vec3 t2 = (boxHalfSize - rayOrigin) * invDir;
+      vec3 tMin = min(t1, t2);
+      vec3 tMax = max(t1, t2);
+      float tNear = max(max(tMin.x, tMin.y), tMin.z);
+      float tFar = min(min(tMax.x, tMax.y), tMax.z);
+      return vec2(tNear, tFar);
+    }
+
+    vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
+      vec3 p = hitPoint / boxHalfSize;
+      vec3 absP = abs(p);
+      float maxComp = max(max(absP.x, absP.y), absP.z);
+      if (absP.x >= maxComp - 0.001) return vec3(sign(p.x), 0.0, 0.0);
+      if (absP.y >= maxComp - 0.001) return vec3(0.0, sign(p.y), 0.0);
+      return vec3(0.0, 0.0, sign(p.z));
+    }
+
+    vec3 getFaceColor(vec3 normal) {
+      vec3 absNormal = abs(normal);
+      if (absNormal.x > 0.5) return YELLOW;
+      if (absNormal.y > 0.5) return MAGENTA;
+      return CYAN;
+    }
+
+    vec3 traceShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float absStrength) {
+      vec3 p = rayOrigin;
+      vec3 filterColor = WHITE;
+      vec2 t = intersectBox(p, rayDir, boxHalfSize);
+      if (t.x > t.y || t.y < 0.0) return WHITE;
+      p = rayOrigin + rayDir * max(t.x, 0.0);
+      vec3 n = getFaceNormal(p, boxHalfSize);
+      vec3 currentRayDir = refract(rayDir, n, 1.0 / 1.49);
+      filterColor *= mix(WHITE, getFaceColor(n), absStrength);
+      for (int i = 0; i < 3; i++) {
+        p += currentRayDir * 0.001;
+        vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
+        p += currentRayDir * tInner.y;
+        vec3 hitNormal = getFaceNormal(p, boxHalfSize);
+        filterColor *= mix(WHITE, getFaceColor(hitNormal), absStrength);
+        vec3 exitRayDir = refract(currentRayDir, -hitNormal, 1.49);
+        if (length(exitRayDir) > 0.1) break; 
+        currentRayDir = reflect(currentRayDir, -hitNormal);
+      }
+      return filterColor;
+    }`
+  )
+
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <dithering_fragment>',
+    `#include <dithering_fragment>
+    vec3 localPos = (inverseModelMatrix * vec4(vWorldPosition, 1.0)).xyz;
+    vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
+    vec3 boxHalfSize = vec3(cubeSize * 0.5);
+    vec2 t = intersectBox(localPos, localLightDir, boxHalfSize);
+    if (t.x < t.y && t.y > 0.0) {
+      vec3 shadowFilter = traceShadow(localPos, localLightDir, boxHalfSize, absorptionStrength);
+      vec3 darkShadow = vec3(0.06); 
+      vec3 causticColor = mix(darkShadow, shadowFilter * brightness, 0.65);
+      gl_FragColor.rgb *= causticColor;
+    }
+    `
+  )
+}
+
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(40, 40),
-  new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false }),
+  groundMaterial,
 )
 ground.rotation.x = -Math.PI / 2
 ground.position.y = -1
@@ -89,6 +198,7 @@ uniform float saturation;
 uniform float bounces;
 uniform float reflectionBoost;
 uniform bool enableInternal;
+uniform float brightness;
 
 varying vec3 vWorldPosition;
 varying vec3 vLocalNormal;
@@ -122,7 +232,6 @@ vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
 
 vec3 getFaceColor(vec3 normal) {
   vec3 absNormal = abs(normal);
-  // Yellow on X, Magenta on Y, Cyan on Z
   if (absNormal.x > 0.5) return YELLOW;
   if (absNormal.y > 0.5) return MAGENTA;
   return CYAN;
@@ -142,7 +251,6 @@ void main() {
   vec3 viewDir = normalize(localWorldPos - localCameraPos);
   vec3 boxHalfSize = vec3(cubeSize * 0.5);
 
-  // 1. Find entry point
   vec2 tOuter = intersectBox(rayOrigin, viewDir, boxHalfSize);
   if (tOuter.x > tOuter.y || tOuter.y < 0.0) {
     discard;
@@ -150,88 +258,63 @@ void main() {
 
   vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
   vec3 entryNormal = getFaceNormal(p, boxHalfSize);
-
-  // Initial color from the entry face
   vec3 filterColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength);
-
-  // 2. Refract into the cube (Air to Acrylic)
   vec3 currentRayDir = refract(viewDir, entryNormal, 1.0 / ior);
   float totalPathLength = 0.0;
 
-  // Trace up to 12 internal bounces to see Total Internal Reflection (TIR)
   for (int i = 0; i < 12; i++) {
       if (!enableInternal || float(i) >= bounces) break;
-
-      // Move slightly along the ray to avoid re-intersecting the same face
       p += currentRayDir * 0.0001;
       vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
-
-      // Advance to the next face hit
       p += currentRayDir * tInner.y;
       vec3 hitNormal = getFaceNormal(p, boxHalfSize);
       totalPathLength += tInner.y;
-
-      // Pick up the color of the face we just hit, modulated by reflectionBoost
       vec3 faceColor = mix(WHITE, getFaceColor(hitNormal), absorptionStrength);
       filterColor *= mix(WHITE, faceColor, reflectionBoost);
-
-      // Try to refract out (Acrylic to Air)
-      // Note: refract returns vec3(0.0) if Total Internal Reflection occurs
       vec3 exitRayDir = refract(currentRayDir, -hitNormal, ior);
-
       if (length(exitRayDir) > 0.1) {
-          // Escaped the cube!
           currentRayDir = exitRayDir;
           break;
       } else {
-          // Total Internal Reflection: stay inside and bounce
           currentRayDir = reflect(currentRayDir, -hitNormal);
       }
   }
 
-  // 3. Final Lighting (calculated at the entry face for surface sheen)
   vec3 vOut = -viewDir;
   vec3 lightingNormal = normalize(vLocalNormal);
-
   float lambert = max(dot(lightingNormal, localLightDir), 0.0);
   float fresnel = pow(1.0 - max(dot(lightingNormal, vOut), 0.0), 3.0);
   vec3 halfDir = normalize(localLightDir + vOut);
   float specular = pow(max(dot(lightingNormal, halfDir), 0.0), 120.0);
   float bevelCatch = pow(max(dot(lightingNormal, localLightDir), 0.0), 36.0);
 
-  // Normalize path length relative to cube size for absorption scaling
   float thickness = clamp(totalPathLength / cubeSize, 0.0, 1.5);
   vec3 acrylicColor = mix(WHITE, filterColor, 0.7 + thickness * 0.25);
   acrylicColor = saturateColor(acrylicColor, saturation);
 
-  // Combine volume color with surface lighting
   float softLight = 0.5 + lambert * 0.5;
-  vec3 color = acrylicColor * softLight;
-
-  // Add surface reflections (Fresnel + Specular)
+  vec3 color = acrylicColor * softLight * brightness;
   color += WHITE * (fresnel * 0.4 + specular * 0.7 + bevelCatch * 0.2);
-
-  // Ambient white boost to keep it looking like clean acrylic
   color = mix(color, WHITE, 0.02);
-
-  // Alpha increases with thickness and glancing angles
   float alpha = clamp(opacity + thickness * 0.15 + fresnel * 0.4 + specular * 0.3, 0.0, 0.98);
   gl_FragColor = vec4(color, alpha);
 }
 `
+
 const cubeMaterial = new THREE.ShaderMaterial({
   uniforms: {
     cameraPos: { value: camera.position },
     lightDirection: { value: directionalLight.position.clone().normalize() },
     cubeSize: { value: 2.0 },
     inverseModelMatrix: { value: new THREE.Matrix4() },
-    ior: { value: 1.49 }, // Standard acrylic IOR
+    ior: { value: 1.49 },
     opacity: { value: 0.58 },
     absorptionStrength: { value: 0.62 },
     saturation: { value: 1.25 },
     bounces: { value: 8.0 },
     reflectionBoost: { value: 1.0 },
     enableInternal: { value: true },
+    brightness: { value: 1.2 },
   },
   vertexShader,
   fragmentShader,
@@ -247,7 +330,6 @@ const cube = new THREE.Mesh(
 cube.castShadow = true
 scene.add(cube)
 
-// GUI for rotation controls
 const gui = new GUI()
 const params = {
   rotationX: 0,
@@ -260,6 +342,7 @@ const params = {
   bounces: 8,
   reflectionBoost: 1.0,
   enableInternal: true,
+  brightness: 1.2,
   lightX: 0,
   lightY: 20,
   lightZ: 10,
@@ -271,6 +354,11 @@ rotationFolder.add(params, 'rotationY', -Math.PI, Math.PI).name('Y').step(0.01)
 rotationFolder.add(params, 'rotationZ', -Math.PI, Math.PI).name('Z').step(0.01)
 rotationFolder.open()
 
+gui.add(params, 'brightness', 0.5, 3.0).name('Brightness').onChange((val: number) => {
+  cubeMaterial.uniforms.brightness.value = val
+  groundUniforms.brightness.value = val
+})
+
 gui.add(params, 'ior', 1.0, 2.0).name('IOR').onChange((val: number) => {
   cubeMaterial.uniforms.ior.value = val
 })
@@ -281,6 +369,7 @@ acrylicFolder.add(params, 'opacity', 0.2, 0.9).name('Opacity').step(0.01).onChan
 })
 acrylicFolder.add(params, 'absorption', 0.2, 1.0).name('Absorption').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.absorptionStrength.value = val
+  groundUniforms.absorptionStrength.value = val
 })
 acrylicFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.saturation.value = val
@@ -301,7 +390,9 @@ reflectionFolder.open()
 
 const updateLight = () => {
   directionalLight.position.set(params.lightX, params.lightY, params.lightZ)
-  cubeMaterial.uniforms.lightDirection.value.copy(directionalLight.position).normalize()
+  const dir = directionalLight.position.clone().normalize()
+  cubeMaterial.uniforms.lightDirection.value.copy(dir)
+  groundUniforms.lightDirection.value.copy(dir)
 }
 
 const lightFolder = gui.addFolder('Light Direction')
@@ -311,7 +402,6 @@ lightFolder.add(params, 'lightZ', -20, 20).name('Z').step(0.1).onChange(updateLi
 lightFolder.open()
 
 const controls = new OrbitControls(camera, renderer.domElement)
-
 controls.enableDamping = true
 controls.enablePan = false
 controls.target.set(0, 0, 0)
@@ -320,14 +410,11 @@ controls.update()
 function resize() {
   const { clientWidth, clientHeight } = mount
   const isNarrow = clientWidth < 640
-
   camera.aspect = clientWidth / clientHeight
   camera.position.copy(isNarrow ? mobileCameraPosition : desktopCameraPosition)
   camera.lookAt(controls.target)
   camera.updateProjectionMatrix()
-
   renderer.setSize(clientWidth, clientHeight, false)
-
   if (isNarrow) {
     gui.close()
   } else {
@@ -337,17 +424,14 @@ function resize() {
 
 function animate() {
   controls.update()
-
-  // Apply rotation from GUI
   cube.rotation.x = params.rotationX
   cube.rotation.y = params.rotationY
   cube.rotation.z = params.rotationZ
-
-  // Update uniforms
   cube.updateMatrixWorld()
+  const invMatrix = cube.matrixWorld.clone().invert()
   cubeMaterial.uniforms.cameraPos.value.copy(camera.position)
-  cubeMaterial.uniforms.inverseModelMatrix.value.copy(cube.matrixWorld).invert()
-
+  cubeMaterial.uniforms.inverseModelMatrix.value.copy(invMatrix)
+  groundUniforms.inverseModelMatrix.value.copy(invMatrix)
   renderer.render(scene, camera)
   requestAnimationFrame(animate)
 }
