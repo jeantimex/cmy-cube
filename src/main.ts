@@ -346,9 +346,9 @@ scene.add(cube)
 
 const gui = new GUI()
 const params = {
-  rotationX: 0,
-  rotationY: 0,
-  rotationZ: 0,
+  rotationXDegrees: 0,
+  rotationYDegrees: 0,
+  rotationZDegrees: 0,
   ior: 1.49,
   opacity: 0.58,
   absorption: 0.62,
@@ -359,15 +359,15 @@ const params = {
   brightness: 1.2,
   innerBrightness: 1.5,
   outerDarkness: 0.1,
-  lightX: 0,
-  lightY: 20,
-  lightZ: 10,
+  lightAzimuthDegrees: 0,
+  lightElevationDegrees: 63,
+  lightDistance: directionalLight.position.length(),
 }
 
 const rotationFolder = gui.addFolder('Rotation')
-rotationFolder.add(params, 'rotationX', -Math.PI, Math.PI).name('X').step(0.01)
-rotationFolder.add(params, 'rotationY', -Math.PI, Math.PI).name('Y').step(0.01)
-rotationFolder.add(params, 'rotationZ', -Math.PI, Math.PI).name('Z').step(0.01)
+rotationFolder.add(params, 'rotationXDegrees', 0, 360).name('X').step(1)
+rotationFolder.add(params, 'rotationYDegrees', 0, 360).name('Y').step(1)
+rotationFolder.add(params, 'rotationZDegrees', 0, 360).name('Z').step(1)
 rotationFolder.open()
 
 gui.add(params, 'brightness', 0.5, 3.0).name('Brightness').onChange((val: number) => {
@@ -414,16 +414,24 @@ shadowFolder.add(params, 'outerDarkness', 0.0, 0.5).name('Outer Darkness').onCha
 shadowFolder.open()
 
 const updateLight = () => {
-  directionalLight.position.set(params.lightX, params.lightY, params.lightZ)
+  const azimuth = THREE.MathUtils.degToRad(params.lightAzimuthDegrees)
+  const elevation = THREE.MathUtils.degToRad(params.lightElevationDegrees)
+  const radiusAtElevation = Math.cos(elevation) * params.lightDistance
+
+  directionalLight.position.set(
+    Math.sin(azimuth) * radiusAtElevation,
+    Math.sin(elevation) * params.lightDistance,
+    Math.cos(azimuth) * radiusAtElevation,
+  )
   const dir = directionalLight.position.clone().normalize()
   cubeMaterial.uniforms.lightDirection.value.copy(dir)
   groundUniforms.lightDirection.value.copy(dir)
 }
 
-const lightFolder = gui.addFolder('Light Direction')
-lightFolder.add(params, 'lightX', -20, 20).name('X').step(0.1).onChange(updateLight)
-lightFolder.add(params, 'lightY', -20, 20).name('Y').step(0.1).onChange(updateLight)
-lightFolder.add(params, 'lightZ', -20, 20).name('Z').step(0.1).onChange(updateLight)
+const lightFolder = gui.addFolder('Light Orbit')
+lightFolder.add(params, 'lightAzimuthDegrees', 0, 360).name('Azimuth').step(1).onChange(updateLight)
+lightFolder.add(params, 'lightElevationDegrees', -89, 89).name('Elevation').step(1).onChange(updateLight)
+lightFolder.add(params, 'lightDistance', 3, 40).name('Distance').step(0.1).onChange(updateLight)
 lightFolder.open()
 
 const controls = new OrbitControls(camera, renderer.domElement)
@@ -449,9 +457,9 @@ function resize() {
 
 function animate() {
   controls.update()
-  cube.rotation.x = params.rotationX
-  cube.rotation.y = params.rotationY
-  cube.rotation.z = params.rotationZ
+  cube.rotation.x = THREE.MathUtils.degToRad(params.rotationXDegrees)
+  cube.rotation.y = THREE.MathUtils.degToRad(params.rotationYDegrees)
+  cube.rotation.z = THREE.MathUtils.degToRad(params.rotationZDegrees)
   cube.updateMatrixWorld()
   const invMatrix = cube.matrixWorld.clone().invert()
   cubeMaterial.uniforms.cameraPos.value.copy(camera.position)
