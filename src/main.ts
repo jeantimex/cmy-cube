@@ -45,7 +45,9 @@ const groundUniforms = {
   cubeSize: { value: 2.0 },
   inverseModelMatrix: { value: new THREE.Matrix4() },
   absorptionStrength: { value: 0.62 },
-  brightness: { value: 1.0 },
+  brightness: { value: 1.2 },
+  innerBrightness: { value: 1.5 },
+  outerDarkness: { value: 0.1 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
@@ -55,6 +57,8 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
   shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
   shader.uniforms.brightness = groundUniforms.brightness
+  shader.uniforms.innerBrightness = groundUniforms.innerBrightness
+  shader.uniforms.outerDarkness = groundUniforms.outerDarkness
 
   shader.vertexShader = shader.vertexShader.replace(
     '#include <common>',
@@ -75,6 +79,8 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform mat4 inverseModelMatrix;
     uniform float absorptionStrength;
     uniform float brightness;
+    uniform float innerBrightness;
+    uniform float outerDarkness;
     varying vec3 vWorldPosition;
 
     const vec3 CYAN = vec3(0.0, 1.0, 1.0);
@@ -109,16 +115,17 @@ groundMaterial.onBeforeCompile = (shader) => {
       return CYAN;
     }
 
-    vec3 traceShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float absStrength) {
+    vec3 traceShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float absStrength, out float bounceCount) {
       vec3 p = rayOrigin;
       vec3 filterColor = WHITE;
+      bounceCount = 0.0;
       vec2 t = intersectBox(p, rayDir, boxHalfSize);
       if (t.x > t.y || t.y < 0.0) return WHITE;
       p = rayOrigin + rayDir * max(t.x, 0.0);
       vec3 n = getFaceNormal(p, boxHalfSize);
       vec3 currentRayDir = refract(rayDir, n, 1.0 / 1.49);
       filterColor *= mix(WHITE, getFaceColor(n), absStrength);
-      for (int i = 0; i < 3; i++) {
+      for (int i = 0; i < 4; i++) {
         p += currentRayDir * 0.001;
         vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
         p += currentRayDir * tInner.y;
@@ -127,6 +134,7 @@ groundMaterial.onBeforeCompile = (shader) => {
         vec3 exitRayDir = refract(currentRayDir, -hitNormal, 1.49);
         if (length(exitRayDir) > 0.1) break; 
         currentRayDir = reflect(currentRayDir, -hitNormal);
+        bounceCount += 1.0;
       }
       return filterColor;
     }`
@@ -140,12 +148,18 @@ groundMaterial.onBeforeCompile = (shader) => {
     vec3 boxHalfSize = vec3(cubeSize * 0.5);
     vec2 t = intersectBox(localPos, localLightDir, boxHalfSize);
     if (t.x < t.y && t.y > 0.0) {
-      vec3 shadowFilter = traceShadow(localPos, localLightDir, boxHalfSize, absorptionStrength);
-      vec3 darkShadow = vec3(0.06); 
-      vec3 causticColor = mix(darkShadow, shadowFilter * brightness, 0.65);
-      gl_FragColor.rgb *= causticColor;
-    }
-    `
+      float bouncesNum = 0.0;
+      vec3 shadowFilter = traceShadow(localPos, localLightDir, boxHalfSize, absorptionStrength, bouncesNum);
+      
+      vec3 result;
+      if (bouncesNum < 0.5) {
+        result = shadowFilter * brightness * innerBrightness;
+      } else {
+        result = mix(vec3(outerDarkness), shadowFilter * brightness, 0.2);
+      }
+      
+      gl_FragColor.rgb *= result;
+    }`
   )
 }
 
@@ -343,6 +357,8 @@ const params = {
   reflectionBoost: 1.0,
   enableInternal: true,
   brightness: 1.2,
+  innerBrightness: 1.5,
+  outerDarkness: 0.1,
   lightX: 0,
   lightY: 20,
   lightZ: 10,
@@ -387,6 +403,15 @@ reflectionFolder.add(params, 'reflectionBoost', 0.0, 2.0).name('Reflection Boost
   cubeMaterial.uniforms.reflectionBoost.value = val
 })
 reflectionFolder.open()
+
+const shadowFolder = gui.addFolder('Shadows')
+shadowFolder.add(params, 'innerBrightness', 0.5, 3.0).name('Inner Brightness').onChange((val: number) => {
+  groundUniforms.innerBrightness.value = val
+})
+shadowFolder.add(params, 'outerDarkness', 0.0, 0.5).name('Outer Darkness').onChange((val: number) => {
+  groundUniforms.outerDarkness.value = val
+})
+shadowFolder.open()
 
 const updateLight = () => {
   directionalLight.position.set(params.lightX, params.lightY, params.lightZ)
