@@ -78,127 +78,146 @@ const vertexShader = `
 `
 
 const fragmentShader = `
-  uniform vec3 cameraPos;
-  uniform vec3 lightDirection;
-  uniform float cubeSize;
-  uniform mat4 inverseModelMatrix;
-  uniform float ior;
-  uniform float opacity;
-  uniform float absorptionStrength;
-  uniform float saturation;
+uniform vec3 cameraPos;
+uniform vec3 lightDirection;
+uniform float cubeSize;
+uniform mat4 inverseModelMatrix;
+uniform float ior;
+uniform float opacity;
+uniform float absorptionStrength;
+uniform float saturation;
+uniform float bounces;
+uniform float reflectionBoost;
 
-  varying vec3 vWorldPosition;
-  varying vec3 vLocalNormal;
+varying vec3 vWorldPosition;
+varying vec3 vLocalNormal;
 
-  // CMY colors (subtractive primaries)
-  const vec3 CYAN = vec3(0.0, 1.0, 1.0);
-  const vec3 MAGENTA = vec3(1.0, 0.0, 1.0);
-  const vec3 YELLOW = vec3(1.0, 1.0, 0.0);
-  const vec3 WHITE = vec3(1.0, 1.0, 1.0);
+// CMY colors (subtractive primaries)
+const vec3 CYAN = vec3(0.0, 1.0, 1.0);
+const vec3 MAGENTA = vec3(1.0, 0.0, 1.0);
+const vec3 YELLOW = vec3(1.0, 1.0, 0.0);
+const vec3 WHITE = vec3(1.0, 1.0, 1.0);
 
-  // Ray-box intersection
-  vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
-    vec3 invDir = 1.0 / rayDir;
-    vec3 t1 = (-boxHalfSize - rayOrigin) * invDir;
-    vec3 t2 = (boxHalfSize - rayOrigin) * invDir;
-    vec3 tMin = min(t1, t2);
-    vec3 tMax = max(t1, t2);
-    float tNear = max(max(tMin.x, tMin.y), tMin.z);
-    float tFar = min(min(tMax.x, tMax.y), tMax.z);
-    return vec2(tNear, tFar);
+// Ray-box intersection
+vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
+  vec3 invDir = 1.0 / rayDir;
+  vec3 t1 = (-boxHalfSize - rayOrigin) * invDir;
+  vec3 t2 = (boxHalfSize - rayOrigin) * invDir;
+  vec3 tMin = min(t1, t2);
+  vec3 tMax = max(t1, t2);
+  float tNear = max(max(tMin.x, tMin.y), tMin.z);
+  float tFar = min(min(tMax.x, tMax.y), tMax.z);
+  return vec2(tNear, tFar);
+}
+
+vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
+  vec3 p = hitPoint / boxHalfSize;
+  vec3 absP = abs(p);
+  float maxComp = max(max(absP.x, absP.y), absP.z);
+  if (absP.x >= maxComp - 0.001) return vec3(sign(p.x), 0.0, 0.0);
+  if (absP.y >= maxComp - 0.001) return vec3(0.0, sign(p.y), 0.0);
+  return vec3(0.0, 0.0, sign(p.z));
+}
+
+vec3 getFaceColor(vec3 normal) {
+  vec3 absNormal = abs(normal);
+  // Yellow on X, Magenta on Y, Cyan on Z
+  if (absNormal.x > 0.5) return YELLOW;
+  if (absNormal.y > 0.5) return MAGENTA;
+  return CYAN;
+}
+
+vec3 saturateColor(vec3 color, float amount) {
+  float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  return mix(vec3(luminance), color, amount);
+}
+
+void main() {
+  vec3 localCameraPos = (inverseModelMatrix * vec4(cameraPos, 1.0)).xyz;
+  vec3 localWorldPos = (inverseModelMatrix * vec4(vWorldPosition, 1.0)).xyz;
+  vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
+
+  vec3 rayOrigin = localCameraPos;
+  vec3 viewDir = normalize(localWorldPos - localCameraPos);
+  vec3 boxHalfSize = vec3(cubeSize * 0.5);
+
+  // 1. Find entry point
+  vec2 tOuter = intersectBox(rayOrigin, viewDir, boxHalfSize);
+  if (tOuter.x > tOuter.y || tOuter.y < 0.0) {
+    discard;
   }
 
-  vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
-    vec3 p = hitPoint / boxHalfSize;
-    vec3 absP = abs(p);
-    float maxComp = max(max(absP.x, absP.y), absP.z);
-    if (absP.x >= maxComp - 0.001) return vec3(sign(p.x), 0.0, 0.0);
-    if (absP.y >= maxComp - 0.001) return vec3(0.0, sign(p.y), 0.0);
-    return vec3(0.0, 0.0, sign(p.z));
+  vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
+  vec3 entryNormal = getFaceNormal(p, boxHalfSize);
+
+  // Initial color from the entry face
+  vec3 filterColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength);
+
+  // 2. Refract into the cube (Air to Acrylic)
+  vec3 currentRayDir = refract(viewDir, entryNormal, 1.0 / ior);
+  float totalPathLength = 0.0;
+
+  // Trace up to 12 internal bounces to see Total Internal Reflection (TIR)
+  for (int i = 0; i < 12; i++) {
+      if (float(i) >= bounces) break;
+
+      // Move slightly along the ray to avoid re-intersecting the same face
+      p += currentRayDir * 0.0001;
+      vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
+
+      // Advance to the next face hit
+      p += currentRayDir * tInner.y;
+      vec3 hitNormal = getFaceNormal(p, boxHalfSize);
+      totalPathLength += tInner.y;
+
+      // Pick up the color of the face we just hit, modulated by reflectionBoost
+      vec3 faceColor = mix(WHITE, getFaceColor(hitNormal), absorptionStrength);
+      filterColor *= mix(WHITE, faceColor, reflectionBoost);
+
+      // Try to refract out (Acrylic to Air)
+      // Note: refract returns vec3(0.0) if Total Internal Reflection occurs
+      vec3 exitRayDir = refract(currentRayDir, -hitNormal, ior);
+
+      if (length(exitRayDir) > 0.1) {
+          // Escaped the cube!
+          currentRayDir = exitRayDir;
+          break;
+      } else {
+          // Total Internal Reflection: stay inside and bounce
+          currentRayDir = reflect(currentRayDir, -hitNormal);
+      }
   }
 
-  vec3 getFaceColor(vec3 normal) {
-    vec3 absNormal = abs(normal);
-    // Yellow on X, Magenta on Y, Cyan on Z
-    if (absNormal.x > 0.5) return YELLOW;
-    if (absNormal.y > 0.5) return MAGENTA;
-    return CYAN;
-  }
+  // 3. Final Lighting (calculated at the entry face for surface sheen)
+  vec3 vOut = -viewDir;
+  vec3 lightingNormal = normalize(vLocalNormal);
 
-  vec3 saturateColor(vec3 color, float amount) {
-    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    return mix(vec3(luminance), color, amount);
-  }
+  float lambert = max(dot(lightingNormal, localLightDir), 0.0);
+  float fresnel = pow(1.0 - max(dot(lightingNormal, vOut), 0.0), 3.0);
+  vec3 halfDir = normalize(localLightDir + vOut);
+  float specular = pow(max(dot(lightingNormal, halfDir), 0.0), 120.0);
+  float bevelCatch = pow(max(dot(lightingNormal, localLightDir), 0.0), 36.0);
 
-  void main() {
-    vec3 localCameraPos = (inverseModelMatrix * vec4(cameraPos, 1.0)).xyz;
-    vec3 localWorldPos = (inverseModelMatrix * vec4(vWorldPosition, 1.0)).xyz;
-    vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
+  // Normalize path length relative to cube size for absorption scaling
+  float thickness = clamp(totalPathLength / cubeSize, 0.0, 1.5);
+  vec3 acrylicColor = mix(WHITE, filterColor, 0.7 + thickness * 0.25);
+  acrylicColor = saturateColor(acrylicColor, saturation);
 
-    vec3 rayOrigin = localCameraPos;
-    vec3 viewDir = normalize(localWorldPos - localCameraPos);
-    vec3 boxHalfSize = vec3(cubeSize * 0.5);
+  // Combine volume color with surface lighting
+  float softLight = 0.5 + lambert * 0.5;
+  vec3 color = acrylicColor * softLight;
 
-    vec2 tOuter = intersectBox(rayOrigin, viewDir, boxHalfSize);
-    if (tOuter.x > tOuter.y || tOuter.y < 0.0) {
-      discard;
-    }
+  // Add surface reflections (Fresnel + Specular)
+  color += WHITE * (fresnel * 0.4 + specular * 0.7 + bevelCatch * 0.2);
 
-    vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
-    vec3 n = getFaceNormal(p, boxHalfSize);
-    float pathLength = max(tOuter.y - max(tOuter.x, 0.0), 0.0);
-    
-    // 1. Initial filter from front face
-    vec3 filterColor = mix(WHITE, getFaceColor(n), absorptionStrength);
+  // Ambient white boost to keep it looking like clean acrylic
+  color = mix(color, WHITE, 0.02);
 
-    // 2. Refract into the cube
-    vec3 currentRayDir = refract(viewDir, n, 1.0 / ior);
-    
-    // Trace up to 4 internal bounces
-    for (int i = 0; i < 4; i++) {
-        p += currentRayDir * 0.001;
-        vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
-        p += currentRayDir * tInner.y;
-        vec3 nextN = getFaceNormal(p, boxHalfSize);
-        pathLength += tInner.y;
-        
-        filterColor *= mix(WHITE, getFaceColor(nextN), absorptionStrength);
-        
-        vec3 nextRayDir = refract(currentRayDir, -nextN, ior);
-        if (length(nextRayDir) > 0.1) {
-            currentRayDir = nextRayDir;
-            break;
-        } else {
-            currentRayDir = reflect(currentRayDir, -nextN);
-        }
-    }
-
-    vec3 viewOut = normalize(localCameraPos - p);
-    vec3 lightingNormal = normalize(vLocalNormal);
-    if (dot(lightingNormal, viewOut) < 0.0) {
-      lightingNormal *= -1.0;
-    }
-
-    float lambert = max(dot(lightingNormal, localLightDir), 0.0);
-    float fresnel = pow(1.0 - max(dot(lightingNormal, viewOut), 0.0), 3.0);
-    vec3 halfDir = normalize(localLightDir + viewOut);
-    float specular = pow(max(dot(lightingNormal, halfDir), 0.0), 120.0);
-    float bevelCatch = pow(max(dot(lightingNormal, localLightDir), 0.0), 36.0);
-
-    float thickness = clamp(pathLength / cubeSize, 0.0, 1.0);
-    vec3 acrylicColor = mix(WHITE, filterColor, 0.78 + thickness * 0.18);
-    acrylicColor = saturateColor(acrylicColor, saturation);
-
-    float softLight = 0.58 + lambert * 0.42;
-    vec3 color = acrylicColor * softLight;
-    color += WHITE * (fresnel * 0.3 + specular * 0.8 + bevelCatch * 0.18);
-    color = mix(color, WHITE, 0.05);
-
-    float alpha = clamp(opacity + thickness * 0.12 + fresnel * 0.3 + specular * 0.28, 0.0, 0.96);
-    gl_FragColor = vec4(color, alpha);
-  }
+  // Alpha increases with thickness and glancing angles
+  float alpha = clamp(opacity + thickness * 0.15 + fresnel * 0.4 + specular * 0.3, 0.0, 0.98);
+  gl_FragColor = vec4(color, alpha);
+}
 `
-
 const cubeMaterial = new THREE.ShaderMaterial({
   uniforms: {
     cameraPos: { value: camera.position },
@@ -209,6 +228,8 @@ const cubeMaterial = new THREE.ShaderMaterial({
     opacity: { value: 0.58 },
     absorptionStrength: { value: 0.62 },
     saturation: { value: 1.25 },
+    bounces: { value: 8.0 },
+    reflectionBoost: { value: 1.0 },
   },
   vertexShader,
   fragmentShader,
@@ -234,6 +255,8 @@ const params = {
   opacity: 0.58,
   absorption: 0.62,
   saturation: 1.25,
+  bounces: 8,
+  reflectionBoost: 1.0,
   lightX: 0,
   lightY: 20,
   lightZ: 10,
@@ -260,6 +283,15 @@ acrylicFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).
   cubeMaterial.uniforms.saturation.value = val
 })
 acrylicFolder.open()
+
+const reflectionFolder = gui.addFolder('Internal Reflection')
+reflectionFolder.add(params, 'bounces', 1, 12).step(1).name('Max Bounces').onChange((val: number) => {
+  cubeMaterial.uniforms.bounces.value = val
+})
+reflectionFolder.add(params, 'reflectionBoost', 0.0, 2.0).name('Reflection Boost').step(0.05).onChange((val: number) => {
+  cubeMaterial.uniforms.reflectionBoost.value = val
+})
+reflectionFolder.open()
 
 const updateLight = () => {
   directionalLight.position.set(params.lightX, params.lightY, params.lightZ)
