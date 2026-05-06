@@ -220,7 +220,6 @@ const groundUniforms = {
   inverseModelMatrix: { value: new THREE.Matrix4() },
   absorptionStrength: { value: 0.62 },
   brightness: { value: 1.2 },
-  enableCausticShadow: { value: true },
   softShadowSize: { value: 0.08 },
   softShadowOpacity: { value: 0.35 },
   causticShadowMix: { value: 0.75 },
@@ -236,7 +235,6 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
   shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
   shader.uniforms.brightness = groundUniforms.brightness
-  shader.uniforms.enableCausticShadow = groundUniforms.enableCausticShadow
   shader.uniforms.softShadowSize = groundUniforms.softShadowSize
   shader.uniforms.softShadowOpacity = groundUniforms.softShadowOpacity
   shader.uniforms.causticShadowMix = groundUniforms.causticShadowMix
@@ -263,7 +261,6 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform mat4 inverseModelMatrix;
     uniform float absorptionStrength;
     uniform float brightness;
-    uniform bool enableCausticShadow;
     uniform float softShadowSize;
     uniform float softShadowOpacity;
     uniform float causticShadowMix;
@@ -403,24 +400,7 @@ groundMaterial.onBeforeCompile = (shader) => {
     vec3 softTransmission = softCaustic.rgb * mix(WHITE, lightColor, 0.6);
     vec3 neutralSoftShadow = vec3(1.0 - softShadowOpacity);
     vec3 coloredSoftShadow = mix(neutralSoftShadow, softTransmission * brightness, 0.35);
-    gl_FragColor.rgb *= mix(WHITE, mix(neutralSoftShadow, coloredSoftShadow, causticShadowMix), softOcclusion);
-
-    vec2 t = intersectBox(localPos, localLightDir, boxHalfSize);
-    if (enableCausticShadow && t.x < t.y && t.y > 0.0) {
-      float bouncesNum = 0.0;
-      vec3 shadowFilter = traceShadow(localPos, localLightDir, boxHalfSize, absorptionStrength, bouncesNum);
-      float normalizedLight = clamp(lightIntensity / 3.0, 0.0, 3.0);
-      float normalizedAmbient = clamp(ambientIntensity / 3.0, 0.0, 2.0);
-      float upwardLight = clamp(localLightDir.y, 0.0, 1.0);
-      float ambientFloor = 0.14 + normalizedAmbient * 0.22;
-      float directStrength = normalizedLight * mix(0.45, 1.25, upwardLight);
-      vec3 tintedTransmission = shadowFilter * mix(WHITE, lightColor, 0.6);
-      vec3 brightCaustic = tintedTransmission * brightness * (0.85 + directStrength * 0.55);
-      vec3 attenuatedShadow = mix(vec3(ambientFloor), tintedTransmission * brightness, 0.18 + normalizedAmbient * 0.08);
-      vec3 result = mix(brightCaustic, attenuatedShadow, step(0.5, bouncesNum));
-      
-      gl_FragColor.rgb *= result;
-    }`
+    gl_FragColor.rgb *= mix(WHITE, mix(neutralSoftShadow, coloredSoftShadow, causticShadowMix), softOcclusion);`
   )
 }
 
@@ -624,7 +604,6 @@ const params = {
   bounces: 8,
   reflectionBoost: 1.0,
   enableInternal: true,
-  enableCausticShadow: true,
   brightness: 1.2,
   lightAzimuthDegrees: 0,
   lightElevationDegrees: 63,
@@ -646,10 +625,6 @@ rotationFolder.open()
 gui.add(params, 'brightness', 0.5, 3.0).name('Brightness').onChange((val: number) => {
   cubeMaterial.uniforms.brightness.value = val
   groundUniforms.brightness.value = val
-})
-
-gui.add(params, 'enableCausticShadow').name('Caustic Shadow').onChange((val: boolean) => {
-  groundUniforms.enableCausticShadow.value = val
 })
 
 gui.add(params, 'ior', 1.0, 2.0).name('IOR').onChange((val: number) => {
