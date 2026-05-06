@@ -92,21 +92,10 @@ const fragmentShader = `
     vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
     vec3 n = getFaceNormal(p, boxHalfSize);
     
-    // 1. Fresnel reflection on the first surface
-    float cosTheta = dot(-viewDir, n);
-    float f0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
-    float fresnel = f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
-    
-    // Specular highlight from a dummy light source
-    vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
-    vec3 halfDir = normalize(lightDir - viewDir);
-    float spec = pow(max(dot(n, halfDir), 0.0), 32.0);
-    vec3 specular = vec3(spec) * 0.5;
-
-    // 2. Initial filter from front face
+    // 1. Initial filter from front face
     vec3 filterColor = WHITE * getFaceColor(n);
 
-    // 3. Refract into the cube
+    // 2. Refract into the cube
     vec3 currentRayDir = refract(viewDir, n, 1.0 / ior);
     
     // Trace up to 4 internal bounces
@@ -127,10 +116,7 @@ const fragmentShader = `
         }
     }
 
-    // Mix refraction with specular reflection using Fresnel
-    vec3 finalColor = mix(filterColor, WHITE, fresnel) + specular;
-
-    gl_FragColor = vec4(finalColor, 1.0);
+    gl_FragColor = vec4(filterColor, 1.0);
   }
 `
 
