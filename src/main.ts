@@ -215,6 +215,8 @@ const groundUniforms = {
   cubeSize: { value: 2.0 },
   inverseModelMatrix: { value: new THREE.Matrix4() },
   absorptionStrength: { value: 0.88 },
+  colorDarkness: { value: 0.0 },
+  saturation: { value: 1.35 },
   brightness: { value: 1.2 },
   ior: { value: 1.62 },
   innerShadowSize: { value: 0.03 },
@@ -234,6 +236,8 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.cubeSize = groundUniforms.cubeSize
   shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
   shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
+  shader.uniforms.colorDarkness = groundUniforms.colorDarkness
+  shader.uniforms.saturation = groundUniforms.saturation
   shader.uniforms.brightness = groundUniforms.brightness
   shader.uniforms.ior = groundUniforms.ior
   shader.uniforms.innerShadowSize = groundUniforms.innerShadowSize
@@ -264,6 +268,8 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform float cubeSize;
     uniform mat4 inverseModelMatrix;
     uniform float absorptionStrength;
+    uniform float colorDarkness;
+    uniform float saturation;
     uniform float brightness;
     uniform float ior;
     uniform float innerShadowSize;
@@ -277,6 +283,9 @@ groundMaterial.onBeforeCompile = (shader) => {
     const vec3 CYAN = vec3(0.0, 0.92, 1.0);
     const vec3 MAGENTA = vec3(1.0, 0.05, 0.9);
     const vec3 YELLOW = vec3(1.0, 0.95, 0.0);
+    const vec3 DEEP_CYAN = vec3(0.0, 0.58, 0.72);
+    const vec3 DEEP_MAGENTA = vec3(0.72, 0.0, 0.48);
+    const vec3 DEEP_YELLOW = vec3(0.96, 0.78, 0.0);
     const vec3 WHITE = vec3(1.0, 1.0, 1.0);
 
     vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
@@ -301,9 +310,22 @@ groundMaterial.onBeforeCompile = (shader) => {
 
     vec3 getFaceColor(vec3 normal) {
       vec3 absNormal = abs(normal);
-      if (absNormal.x > 0.5) return YELLOW;
-      if (absNormal.y > 0.5) return MAGENTA;
-      return CYAN;
+      vec3 faceColor = CYAN;
+      vec3 deepFaceColor = DEEP_CYAN;
+      if (absNormal.x > 0.5) {
+        faceColor = YELLOW;
+        deepFaceColor = DEEP_YELLOW;
+      }
+      if (absNormal.y > 0.5) {
+        faceColor = MAGENTA;
+        deepFaceColor = DEEP_MAGENTA;
+      }
+      return mix(faceColor, deepFaceColor, colorDarkness);
+    }
+
+    vec3 saturateColor(vec3 color, float amount) {
+      float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      return mix(vec3(luminance), color, amount);
     }
 
     float hardBoxShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
@@ -375,7 +397,7 @@ groundMaterial.onBeforeCompile = (shader) => {
         currentRayDir = reflect(currentRayDir, -hitNormal);
         bounceCount += 1.0;
       }
-      return filterColor;
+      return saturateColor(filterColor, saturation);
     }
 
     struct ShadowResult {
@@ -515,6 +537,7 @@ uniform mat4 inverseModelMatrix;
 uniform float ior;
 uniform float opacity;
 uniform float absorptionStrength;
+uniform float colorDarkness;
 uniform float saturation;
 uniform float bounces;
 uniform float reflectionBoost;
@@ -535,6 +558,9 @@ varying vec3 vLocalNormal;
 const vec3 CYAN = vec3(0.0, 0.92, 1.0);
 const vec3 MAGENTA = vec3(1.0, 0.05, 0.9);
 const vec3 YELLOW = vec3(1.0, 0.95, 0.0);
+const vec3 DEEP_CYAN = vec3(0.0, 0.58, 0.72);
+const vec3 DEEP_MAGENTA = vec3(0.72, 0.0, 0.48);
+const vec3 DEEP_YELLOW = vec3(0.96, 0.78, 0.0);
 const vec3 WHITE = vec3(1.0, 1.0, 1.0);
 
 // Procedural environment for fake reflections
@@ -578,9 +604,17 @@ vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
 
 vec3 getFaceColor(vec3 normal) {
   vec3 absNormal = abs(normal);
-  if (absNormal.x > 0.5) return YELLOW;
-  if (absNormal.y > 0.5) return MAGENTA;
-  return CYAN;
+  vec3 faceColor = CYAN;
+  vec3 deepFaceColor = DEEP_CYAN;
+  if (absNormal.x > 0.5) {
+    faceColor = YELLOW;
+    deepFaceColor = DEEP_YELLOW;
+  }
+  if (absNormal.y > 0.5) {
+    faceColor = MAGENTA;
+    deepFaceColor = DEEP_MAGENTA;
+  }
+  return mix(faceColor, deepFaceColor, colorDarkness);
 }
 
 vec3 saturateColor(vec3 color, float amount) {
@@ -713,6 +747,7 @@ const cubeMaterial = new THREE.ShaderMaterial({
     ior: { value: 1.62 },
     opacity: { value: 0.58 },
     absorptionStrength: { value: 0.88 },
+    colorDarkness: { value: 0.0 },
     saturation: { value: 1.35 },
     bounces: { value: 8.0 },
     reflectionBoost: { value: 1.0 },
@@ -748,6 +783,7 @@ const params = {
   ior: 1.62,
   opacity: 0.58,
   absorption: 0.88,
+  colorDarkness: 0.0,
   saturation: 1.35,
   bounces: 8,
   reflectionBoost: 1.0,
@@ -798,8 +834,13 @@ materialFolder.add(params, 'absorption', 0.2, 1.0).name('Absorption').step(0.01)
   cubeMaterial.uniforms.absorptionStrength.value = val
   groundUniforms.absorptionStrength.value = val
 })
+materialFolder.add(params, 'colorDarkness', 0.0, 2.0).name('Color Darkness').step(0.01).onChange((val: number) => {
+  cubeMaterial.uniforms.colorDarkness.value = val
+  groundUniforms.colorDarkness.value = val
+})
 materialFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.saturation.value = val
+  groundUniforms.saturation.value = val
 })
 materialFolder.add(params, 'reflectionStrength', 0.0, 2.0).name('Reflections').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.reflectionStrength.value = val
