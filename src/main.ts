@@ -181,10 +181,7 @@ renderer.shadowMap.enabled = false
 mount.appendChild(renderer.domElement)
 
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100)
-const desktopCameraPosition = new THREE.Vector3(3.2, 2.35, 4)
-const mobileCameraPosition = new THREE.Vector3(3.8, 3.4, 9.2)
-
-camera.position.copy(desktopCameraPosition)
+camera.position.set(3.2, 2.35, 4)
 camera.lookAt(0, 0, 0)
 
 const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 3)
@@ -874,17 +871,9 @@ controls.update()
 
 function resize() {
   const { clientWidth, clientHeight } = mount
-  const isNarrow = clientWidth < 640
   camera.aspect = clientWidth / clientHeight
-  camera.position.copy(isNarrow ? mobileCameraPosition : desktopCameraPosition)
-  camera.lookAt(controls.target)
   camera.updateProjectionMatrix()
   renderer.setSize(clientWidth, clientHeight, false)
-  if (isNarrow) {
-    gui.close()
-  } else {
-    gui.open()
-  }
 }
 
 function animate() {
