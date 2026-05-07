@@ -220,9 +220,12 @@ const groundUniforms = {
   inverseModelMatrix: { value: new THREE.Matrix4() },
   absorptionStrength: { value: 0.62 },
   brightness: { value: 1.2 },
-  softShadowSize: { value: 0.08 },
-  softShadowOpacity: { value: 0.35 },
-  causticShadowMix: { value: 0.75 },
+  innerShadowSize: { value: 0.03 },
+  innerShadowOpacity: { value: 0.35 },
+  innerCausticShadowMix: { value: 0.8 },
+  outerShadowSize: { value: 0.12 },
+  outerShadowOpacity: { value: 0.45 },
+  outerCausticShadowMix: { value: 0.15 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
@@ -235,9 +238,12 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
   shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
   shader.uniforms.brightness = groundUniforms.brightness
-  shader.uniforms.softShadowSize = groundUniforms.softShadowSize
-  shader.uniforms.softShadowOpacity = groundUniforms.softShadowOpacity
-  shader.uniforms.causticShadowMix = groundUniforms.causticShadowMix
+  shader.uniforms.innerShadowSize = groundUniforms.innerShadowSize
+  shader.uniforms.innerShadowOpacity = groundUniforms.innerShadowOpacity
+  shader.uniforms.innerCausticShadowMix = groundUniforms.innerCausticShadowMix
+  shader.uniforms.outerShadowSize = groundUniforms.outerShadowSize
+  shader.uniforms.outerShadowOpacity = groundUniforms.outerShadowOpacity
+  shader.uniforms.outerCausticShadowMix = groundUniforms.outerCausticShadowMix
 
   shader.vertexShader = shader.vertexShader.replace(
     '#include <common>',
@@ -261,9 +267,12 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform mat4 inverseModelMatrix;
     uniform float absorptionStrength;
     uniform float brightness;
-    uniform float softShadowSize;
-    uniform float softShadowOpacity;
-    uniform float causticShadowMix;
+    uniform float innerShadowSize;
+    uniform float innerShadowOpacity;
+    uniform float innerCausticShadowMix;
+    uniform float outerShadowSize;
+    uniform float outerShadowOpacity;
+    uniform float outerCausticShadowMix;
     varying vec3 vGroundWorldPosition;
 
     const vec3 CYAN = vec3(0.0, 1.0, 1.0);
@@ -332,14 +341,21 @@ groundMaterial.onBeforeCompile = (shader) => {
       return smoothstep(0.0, 1.0, occlusion / 96.0);
     }
 
-    vec3 traceShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float absStrength, out float bounceCount) {
+    vec3 traceShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float absStrength, out float bounceCount, out int axisMask) {
       vec3 p = rayOrigin;
       vec3 filterColor = WHITE;
       bounceCount = 0.0;
+      axisMask = 0;
       vec2 t = intersectBox(p, rayDir, boxHalfSize);
       if (t.x > t.y || t.y < 0.0) return WHITE;
       p = rayOrigin + rayDir * max(t.x, 0.0);
       vec3 n = getFaceNormal(p, boxHalfSize);
+      
+      vec3 absN = abs(n);
+      if (absN.x > 0.5) axisMask |= 1;
+      else if (absN.y > 0.5) axisMask |= 2;
+      else axisMask |= 4;
+
       vec3 currentRayDir = refract(rayDir, n, 1.0 / 1.49);
       filterColor *= mix(WHITE, getFaceColor(n), absStrength);
       for (int i = 0; i < 4; i++) {
@@ -347,6 +363,12 @@ groundMaterial.onBeforeCompile = (shader) => {
         vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
         p += currentRayDir * tInner.y;
         vec3 hitNormal = getFaceNormal(p, boxHalfSize);
+        
+        vec3 absHitN = abs(hitNormal);
+        if (absHitN.x > 0.5) axisMask |= 1;
+        else if (absHitN.y > 0.5) axisMask |= 2;
+        else axisMask |= 4;
+
         filterColor *= mix(WHITE, getFaceColor(hitNormal), absStrength);
         vec3 exitRayDir = refract(currentRayDir, -hitNormal, 1.49);
         if (length(exitRayDir) > 0.1) break; 
@@ -356,15 +378,32 @@ groundMaterial.onBeforeCompile = (shader) => {
       return filterColor;
     }
 
-    vec4 traceSoftCausticShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float spread, float absStrength) {
+    vec4 traceSoftCausticShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float spread, float absStrength, bool innerOnly) {
       vec3 accumulatedFilter = vec3(0.0);
       float occlusion = 0.0;
 
       if (spread <= 0.0001) {
         float bouncesNum = 0.0;
-        vec3 filterColor = traceShadow(rayOrigin, rayDir, boxHalfSize, absStrength, bouncesNum);
-        float hit = hardBoxShadow(rayOrigin, rayDir, boxHalfSize);
-        return vec4(filterColor, hit);
+        int axisMask = 0;
+        vec3 filterColor = traceShadow(rayOrigin, rayDir, boxHalfSize, absStrength, bouncesNum, axisMask);
+        int count = 0;
+        if ((axisMask & 1) != 0) count++;
+        if ((axisMask & 2) != 0) count++;
+        if ((axisMask & 4) != 0) count++;
+        
+        if (innerOnly) {
+          if (count == 1) {
+            float hit = hardBoxShadow(rayOrigin, rayDir, boxHalfSize);
+            return vec4(filterColor, hit);
+          }
+        } else {
+          float hit = hardBoxShadow(rayOrigin, rayDir, boxHalfSize);
+          if (hit > 0.0) {
+            vec3 resultColor = (count > 1) ? filterColor : vec3(0.02);
+            return vec4(resultColor, 1.0);
+          }
+        }
+        return vec4(WHITE, 0.0);
       }
 
       vec3 up = abs(rayDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
@@ -379,8 +418,26 @@ groundMaterial.onBeforeCompile = (shader) => {
 
         if (hit > 0.0) {
           float bouncesNum = 0.0;
-          accumulatedFilter += traceShadow(rayOrigin, sampleDir, boxHalfSize, absStrength, bouncesNum);
-          occlusion += 1.0;
+          int axisMask = 0;
+          vec3 filterColor = traceShadow(rayOrigin, sampleDir, boxHalfSize, absStrength, bouncesNum, axisMask);
+          int count = 0;
+          if ((axisMask & 1) != 0) count++;
+          if ((axisMask & 2) != 0) count++;
+          if ((axisMask & 4) != 0) count++;
+          
+          if (innerOnly) {
+            if (count == 1) {
+              accumulatedFilter += filterColor;
+              occlusion += 1.0;
+            }
+          } else {
+            occlusion += 1.0;
+            if (count > 1) {
+              accumulatedFilter += filterColor;
+            } else {
+              accumulatedFilter += vec3(0.02); // Dark fallback for primary areas in the outer trace
+            }
+          }
         }
       }
 
@@ -395,12 +452,21 @@ groundMaterial.onBeforeCompile = (shader) => {
     vec3 localPos = (inverseModelMatrix * vec4(vGroundWorldPosition, 1.0)).xyz;
     vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
     vec3 boxHalfSize = vec3(cubeSize * 0.5);
-    vec4 softCaustic = traceSoftCausticShadow(localPos, localLightDir, boxHalfSize, softShadowSize, absorptionStrength);
-    float softOcclusion = softCaustic.a;
-    vec3 softTransmission = softCaustic.rgb * mix(WHITE, lightColor, 0.6);
-    vec3 neutralSoftShadow = vec3(1.0 - softShadowOpacity);
-    vec3 coloredSoftShadow = mix(neutralSoftShadow, softTransmission * brightness, 0.35);
-    gl_FragColor.rgb *= mix(WHITE, mix(neutralSoftShadow, coloredSoftShadow, causticShadowMix), softOcclusion);`
+
+    vec4 innerSoftCaustic = traceSoftCausticShadow(localPos, localLightDir, boxHalfSize, innerShadowSize, absorptionStrength, true);
+    vec4 outerSoftCaustic = traceSoftCausticShadow(localPos, localLightDir, boxHalfSize, outerShadowSize, absorptionStrength, false);
+
+    vec3 innerTransmission = innerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
+    vec3 innerNeutralShadow = vec3(1.0 - innerShadowOpacity);
+    vec3 innerColoredShadow = mix(innerNeutralShadow, innerTransmission * brightness, 0.35);
+    vec3 innerShadowResult = mix(WHITE, mix(innerNeutralShadow, innerColoredShadow, innerCausticShadowMix), innerSoftCaustic.a);
+
+    vec3 outerTransmission = outerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
+    vec3 outerNeutralShadow = vec3(1.0 - outerShadowOpacity);
+    vec3 outerColoredShadow = mix(outerNeutralShadow, outerTransmission * brightness, 0.35);
+    vec3 outerShadowResult = mix(WHITE, mix(outerNeutralShadow, outerColoredShadow, outerCausticShadowMix), outerSoftCaustic.a);
+
+    gl_FragColor.rgb *= mix(outerShadowResult, innerShadowResult, innerSoftCaustic.a);`
   )
 }
 
@@ -611,9 +677,12 @@ const params = {
   lightBrightness: directionalLight.intensity,
   lightWarmth: 0.5,
   ambientBrightness: hemiLight.intensity,
-  shadowSoftness: groundUniforms.softShadowSize.value,
-  shadowOpacity: groundUniforms.softShadowOpacity.value,
-  causticShadowMix: groundUniforms.causticShadowMix.value,
+  innerShadowSize: groundUniforms.innerShadowSize.value,
+  innerShadowOpacity: groundUniforms.innerShadowOpacity.value,
+  innerCausticShadowMix: groundUniforms.innerCausticShadowMix.value,
+  outerShadowSize: groundUniforms.outerShadowSize.value,
+  outerShadowOpacity: groundUniforms.outerShadowOpacity.value,
+  outerCausticShadowMix: groundUniforms.outerCausticShadowMix.value,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -709,15 +778,31 @@ lightAppearanceFolder.add(params, 'ambientBrightness', 0, 6).name('Ambient').ste
 lightAppearanceFolder.open()
 
 const shadowFolder = gui.addFolder('Soft Shadow')
-shadowFolder.add(params, 'shadowSoftness', 0.0, 0.22).name('Light Size').step(0.005).onChange((val: number) => {
-  groundUniforms.softShadowSize.value = val
+
+const innerShadowFolder = shadowFolder.addFolder('Inner (Sharp)')
+innerShadowFolder.add(params, 'innerShadowSize', 0.0, 0.1).name('Light Size').step(0.001).onChange((val: number) => {
+  groundUniforms.innerShadowSize.value = val
 })
-shadowFolder.add(params, 'shadowOpacity', 0.0, 0.75).name('Opacity').step(0.01).onChange((val: number) => {
-  groundUniforms.softShadowOpacity.value = val
+innerShadowFolder.add(params, 'innerShadowOpacity', 0.0, 1.0).name('Opacity').step(0.01).onChange((val: number) => {
+  groundUniforms.innerShadowOpacity.value = val
 })
-shadowFolder.add(params, 'causticShadowMix', 0.0, 1.0).name('Color Mix').step(0.01).onChange((val: number) => {
-  groundUniforms.causticShadowMix.value = val
+innerShadowFolder.add(params, 'innerCausticShadowMix', 0.0, 1.0).name('Color Mix').step(0.01).onChange((val: number) => {
+  groundUniforms.innerCausticShadowMix.value = val
 })
+innerShadowFolder.open()
+
+const outerShadowFolder = shadowFolder.addFolder('Outer (Soft)')
+outerShadowFolder.add(params, 'outerShadowSize', 0.0, 0.25).name('Light Size').step(0.005).onChange((val: number) => {
+  groundUniforms.outerShadowSize.value = val
+})
+outerShadowFolder.add(params, 'outerShadowOpacity', 0.0, 1.0).name('Opacity').step(0.01).onChange((val: number) => {
+  groundUniforms.outerShadowOpacity.value = val
+})
+outerShadowFolder.add(params, 'outerCausticShadowMix', 0.0, 1.0).name('Color Mix').step(0.01).onChange((val: number) => {
+  groundUniforms.outerCausticShadowMix.value = val
+})
+outerShadowFolder.open()
+
 shadowFolder.open()
 
 updateLightColor()
