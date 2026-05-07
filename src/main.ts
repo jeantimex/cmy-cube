@@ -1,7 +1,6 @@
 import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import GUI from 'lil-gui'
 
 const installPCSSShadows = () => {
@@ -600,6 +599,12 @@ float getEdgeFactor(vec3 hitPoint, vec3 normal, vec3 boxHalfSize) {
   return smoothstep(0.998 - edgeWidth, 0.998, tangentEdge);
 }
 
+float getBottomSurfaceEdgeFactor(vec3 hitPoint, vec3 normal, vec3 boxHalfSize) {
+  float sideFace = 1.0 - abs(normal.y);
+  float bottomEdge = smoothstep(0.986, 0.999, -hitPoint.y / boxHalfSize.y);
+  return sideFace * bottomEdge;
+}
+
 void main() {
   vec3 localCameraPos = (inverseModelMatrix * vec4(cameraPos, 1.0)).xyz;
   vec3 localWorldPos = (inverseModelMatrix * vec4(vWorldPosition, 1.0)).xyz;
@@ -616,6 +621,7 @@ void main() {
 
   vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
   vec3 entryNormal = getFaceNormal(p, boxHalfSize);
+  float bottomSurfaceEdgeFactor = getBottomSurfaceEdgeFactor(p, entryNormal, boxHalfSize);
   vec3 entryFilterColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength * 0.95);
   vec3 internalFilterColor = entryFilterColor;
   
@@ -688,6 +694,7 @@ void main() {
   color += reflectionLayer;
   color += directLightColor * (specular * normalizedLightIntensity * 1.5 + bevelCatch * normalizedLightIntensity * 0.6);
   color += directLightColor * internalEdgeFactor * edgeBrightness * (0.12 + fresnel * 0.2 + normalizedLightIntensity * 0.1);
+  color = mix(color, max(color, acrylicColor * brightness * 1.08), bottomSurfaceEdgeFactor * 0.35);
   
   color = mix(color, WHITE, 0.015 + internalEdgeFactor * edgeWhiteness);
   float alpha = clamp(opacity + thickness * 0.1 + fresnel * 0.7 + specular * 0.6 + internalEdgeFactor * edgeAlpha, 0.0, 0.98);
@@ -727,7 +734,7 @@ const cubeMaterial = new THREE.ShaderMaterial({
 })
 
 const cube = new THREE.Mesh(
-  new RoundedBoxGeometry(2, 2, 2, 8, 0.035),
+  new THREE.BoxGeometry(2, 2, 2),
   cubeMaterial,
 )
 cube.castShadow = false
