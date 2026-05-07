@@ -181,15 +181,15 @@ renderer.shadowMap.enabled = false
 mount.appendChild(renderer.domElement)
 
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100)
-camera.position.set(3.2, 2.35, 4)
+camera.position.set(6.4, 4.7, 8.0)
 camera.lookAt(0, 0, 0)
 
 const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 3)
 hemiLight.position.set(0, 20, 0)
 scene.add(hemiLight)
 
-const directionalLight = new THREE.DirectionalLight(0xffffff, 3)
-directionalLight.position.set(0, 20, 10)
+const directionalLight = new THREE.DirectionalLight(0xffffff, 4)
+directionalLight.position.set(1.737, 1.721, -1.737)
 directionalLight.castShadow = false
 directionalLight.shadow.mapSize.set(2048, 2048)
 directionalLight.shadow.camera.near = 0.5
@@ -220,8 +220,8 @@ const groundUniforms = {
   ior: { value: 1.62 },
   innerShadowSize: { value: 0.03 },
   innerShadowOpacity: { value: 0.35 },
-  innerCausticShadowMix: { value: 0.9 },
-  outerShadowSize: { value: 0.12 },
+  innerCausticShadowMix: { value: 1 },
+  outerShadowSize: { value: 0.03 },
   outerShadowOpacity: { value: 0.5 },
   outerCausticShadowMix: { value: 0.2 },
 }
@@ -523,6 +523,7 @@ uniform bool enableInternal;
 uniform float brightness;
 uniform float reflectionStrength;
 uniform float dispersion;
+uniform float internalColorOpacity;
 
 varying vec3 vWorldPosition;
 varying vec3 vLocalNormal;
@@ -600,7 +601,8 @@ void main() {
 
   vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
   vec3 entryNormal = getFaceNormal(p, boxHalfSize);
-  vec3 filterColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength * 0.95);
+  vec3 entryFilterColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength * 0.95);
+  vec3 internalFilterColor = entryFilterColor;
   
   // Initial refraction with dispersion (R G B slightly different IORs)
   float safeIor = max(ior, 0.01);
@@ -624,7 +626,7 @@ void main() {
       vec3 hitNormal = getFaceNormal(pG, boxHalfSize);
       totalPathLength += tInner.y;
       vec3 faceColor = mix(WHITE, getFaceColor(hitNormal), absorptionStrength);
-      filterColor *= mix(WHITE, faceColor, reflectionBoost * 0.98);
+      internalFilterColor *= mix(WHITE, faceColor, reflectionBoost * 0.98);
       vec3 exitRayDirG = refract(currentRayDirG, -hitNormal, iorG);
       if (length(exitRayDirG) > 0.1) {
           currentRayDirG = exitRayDirG;
@@ -649,6 +651,7 @@ void main() {
   vec3 envReflection = getFakeEnv(R, localLightDir, directLightColor);
 
   float thickness = clamp(totalPathLength / cubeSize, 0.0, 1.5);
+  vec3 filterColor = mix(entryFilterColor, internalFilterColor, internalColorOpacity);
   vec3 acrylicColor = mix(WHITE, filterColor, 0.82 + thickness * 0.18);
   acrylicColor = saturateColor(acrylicColor, saturation);
 
@@ -686,6 +689,7 @@ const cubeMaterial = new THREE.ShaderMaterial({
     saturation: { value: 1.35 },
     bounces: { value: 8.0 },
     reflectionBoost: { value: 1.0 },
+    internalColorOpacity: { value: 0.45 },
     enableInternal: { value: true },
     brightness: { value: 1.2 },
     reflectionStrength: { value: 0.85 },
@@ -720,9 +724,10 @@ const params = {
   brightness: 1.2,
   reflectionStrength: 0.85,
   dispersion: 0.02,
-  lightAzimuthDegrees: 0,
-  lightElevationDegrees: 63,
-  lightDistance: baseLightDistance,
+  internalColorOpacity: 0.45,
+  lightAzimuthDegrees: 135,
+  lightElevationDegrees: 35,
+  lightDistance: 3,
   lightBrightness: directionalLight.intensity,
   lightWarmth: 0.5,
   ambientBrightness: hemiLight.intensity,
@@ -766,6 +771,9 @@ materialFolder.add(params, 'reflectionStrength', 0.0, 2.0).name('Reflections').s
 })
 materialFolder.add(params, 'dispersion', 0.0, 0.1).name('Dispersion').step(0.001).onChange((val: number) => {
   cubeMaterial.uniforms.dispersion.value = val
+})
+materialFolder.add(params, 'internalColorOpacity', 0.0, 1.0).name('Internal Color').step(0.01).onChange((val: number) => {
+  cubeMaterial.uniforms.internalColorOpacity.value = val
 })
 materialFolder.open()
 
@@ -862,6 +870,7 @@ outerShadowFolder.open()
 shadowFolder.open()
 
 updateLightColor()
+gui.close()
 
 const controls = new OrbitControls(camera, renderer.domElement)
 controls.enableDamping = true
