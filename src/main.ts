@@ -218,14 +218,15 @@ const groundUniforms = {
   ambientIntensity: { value: hemiLight.intensity },
   cubeSize: { value: 2.0 },
   inverseModelMatrix: { value: new THREE.Matrix4() },
-  absorptionStrength: { value: 0.62 },
+  absorptionStrength: { value: 0.88 },
   brightness: { value: 1.2 },
+  ior: { value: 1.62 },
   innerShadowSize: { value: 0.03 },
   innerShadowOpacity: { value: 0.35 },
-  innerCausticShadowMix: { value: 0.8 },
+  innerCausticShadowMix: { value: 0.9 },
   outerShadowSize: { value: 0.12 },
-  outerShadowOpacity: { value: 0.45 },
-  outerCausticShadowMix: { value: 0.15 },
+  outerShadowOpacity: { value: 0.5 },
+  outerCausticShadowMix: { value: 0.2 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
@@ -238,6 +239,7 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.inverseModelMatrix = groundUniforms.inverseModelMatrix
   shader.uniforms.absorptionStrength = groundUniforms.absorptionStrength
   shader.uniforms.brightness = groundUniforms.brightness
+  shader.uniforms.ior = groundUniforms.ior
   shader.uniforms.innerShadowSize = groundUniforms.innerShadowSize
   shader.uniforms.innerShadowOpacity = groundUniforms.innerShadowOpacity
   shader.uniforms.innerCausticShadowMix = groundUniforms.innerCausticShadowMix
@@ -267,6 +269,7 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform mat4 inverseModelMatrix;
     uniform float absorptionStrength;
     uniform float brightness;
+    uniform float ior;
     uniform float innerShadowSize;
     uniform float innerShadowOpacity;
     uniform float innerCausticShadowMix;
@@ -275,9 +278,9 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform float outerCausticShadowMix;
     varying vec3 vGroundWorldPosition;
 
-    const vec3 CYAN = vec3(0.0, 1.0, 1.0);
-    const vec3 MAGENTA = vec3(1.0, 0.0, 1.0);
-    const vec3 YELLOW = vec3(1.0, 1.0, 0.0);
+    const vec3 CYAN = vec3(0.0, 0.92, 1.0);
+    const vec3 MAGENTA = vec3(1.0, 0.05, 0.9);
+    const vec3 YELLOW = vec3(1.0, 0.95, 0.0);
     const vec3 WHITE = vec3(1.0, 1.0, 1.0);
 
     vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
@@ -356,7 +359,8 @@ groundMaterial.onBeforeCompile = (shader) => {
       else if (absN.y > 0.5) axisMask |= 2;
       else axisMask |= 4;
 
-      vec3 currentRayDir = refract(rayDir, n, 1.0 / 1.49);
+      float safeIor = max(ior, 0.01);
+      vec3 currentRayDir = refract(rayDir, n, 1.0 / safeIor);
       filterColor *= mix(WHITE, getFaceColor(n), absStrength);
       for (int i = 0; i < 4; i++) {
         p += currentRayDir * 0.001;
@@ -370,7 +374,7 @@ groundMaterial.onBeforeCompile = (shader) => {
         else axisMask |= 4;
 
         filterColor *= mix(WHITE, getFaceColor(hitNormal), absStrength);
-        vec3 exitRayDir = refract(currentRayDir, -hitNormal, 1.49);
+        vec3 exitRayDir = refract(currentRayDir, -hitNormal, safeIor);
         if (length(exitRayDir) > 0.1) break; 
         currentRayDir = reflect(currentRayDir, -hitNormal);
         bounceCount += 1.0;
@@ -520,15 +524,35 @@ uniform float bounces;
 uniform float reflectionBoost;
 uniform bool enableInternal;
 uniform float brightness;
+uniform float reflectionStrength;
+uniform float dispersion;
 
 varying vec3 vWorldPosition;
 varying vec3 vLocalNormal;
 
-// CMY colors (subtractive primaries)
-const vec3 CYAN = vec3(0.0, 1.0, 1.0);
-const vec3 MAGENTA = vec3(1.0, 0.0, 1.0);
-const vec3 YELLOW = vec3(1.0, 1.0, 0.0);
+// CMY colors (subtractive primaries) - saturated for vibrancy
+const vec3 CYAN = vec3(0.0, 0.92, 1.0);
+const vec3 MAGENTA = vec3(1.0, 0.05, 0.9);
+const vec3 YELLOW = vec3(1.0, 0.95, 0.0);
 const vec3 WHITE = vec3(1.0, 1.0, 1.0);
+
+// Procedural environment for fake reflections
+vec3 getFakeEnv(vec3 dir, vec3 lDir, vec3 lCol) {
+  float sky = smoothstep(-0.2, 0.4, dir.y);
+  vec3 skyCol = mix(vec3(0.1, 0.12, 0.15), vec3(0.5, 0.7, 1.0), sky);
+  vec3 groundCol = vec3(0.04, 0.04, 0.04);
+  vec3 env = mix(groundCol, skyCol, sky);
+  
+  // Add a fake sun/light reflection in the env
+  float sun = pow(max(dot(dir, lDir), 0.0), 120.0);
+  env += lCol * sun * 8.0;
+  
+  // Add some "room" structure
+  float grid = step(0.98, fract(dir.x * 2.0)) + step(0.98, fract(dir.z * 2.0));
+  env += vec3(0.2) * grid * sky;
+  
+  return env;
+}
 
 // Ray-box intersection
 vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
@@ -579,48 +603,74 @@ void main() {
 
   vec3 p = rayOrigin + viewDir * max(tOuter.x, 0.0);
   vec3 entryNormal = getFaceNormal(p, boxHalfSize);
-  vec3 filterColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength);
-  vec3 currentRayDir = refract(viewDir, entryNormal, 1.0 / ior);
+  vec3 filterColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength * 0.95);
+  
+  // Initial refraction with dispersion (R G B slightly different IORs)
+  float safeIor = max(ior, 0.01);
+  float iorR = max(safeIor - dispersion, 0.01);
+  float iorG = safeIor;
+  float iorB = max(safeIor + dispersion, 0.01);
+  
+  vec3 rayDirR = refract(viewDir, entryNormal, 1.0 / iorR);
+  vec3 rayDirG = refract(viewDir, entryNormal, 1.0 / iorG);
+  vec3 rayDirB = refract(viewDir, entryNormal, 1.0 / iorB);
+  
   float totalPathLength = 0.0;
+  vec3 pG = p;
+  vec3 currentRayDirG = rayDirG;
 
   for (int i = 0; i < 12; i++) {
       if (!enableInternal || float(i) >= bounces) break;
-      p += currentRayDir * 0.0001;
-      vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
-      p += currentRayDir * tInner.y;
-      vec3 hitNormal = getFaceNormal(p, boxHalfSize);
+      pG += currentRayDirG * 0.0001;
+      vec2 tInner = intersectBox(pG, currentRayDirG, boxHalfSize);
+      pG += currentRayDirG * tInner.y;
+      vec3 hitNormal = getFaceNormal(pG, boxHalfSize);
       totalPathLength += tInner.y;
       vec3 faceColor = mix(WHITE, getFaceColor(hitNormal), absorptionStrength);
-      filterColor *= mix(WHITE, faceColor, reflectionBoost);
-      vec3 exitRayDir = refract(currentRayDir, -hitNormal, ior);
-      if (length(exitRayDir) > 0.1) {
-          currentRayDir = exitRayDir;
+      filterColor *= mix(WHITE, faceColor, reflectionBoost * 0.98);
+      vec3 exitRayDirG = refract(currentRayDirG, -hitNormal, iorG);
+      if (length(exitRayDirG) > 0.1) {
+          currentRayDirG = exitRayDirG;
           break;
       } else {
-          currentRayDir = reflect(currentRayDir, -hitNormal);
+          currentRayDirG = reflect(currentRayDirG, -hitNormal);
       }
   }
 
   vec3 vOut = -viewDir;
   vec3 lightingNormal = normalize(vLocalNormal);
   float lambert = max(dot(lightingNormal, localLightDir), 0.0);
-  float fresnel = pow(1.0 - max(dot(lightingNormal, vOut), 0.0), 3.0);
+  float fresnel = pow(1.0 - max(dot(lightingNormal, vOut), 0.0), 4.5);
   vec3 halfDir = normalize(localLightDir + vOut);
-  float specular = pow(max(dot(lightingNormal, halfDir), 0.0), 120.0);
-  float bevelCatch = pow(max(dot(lightingNormal, localLightDir), 0.0), 36.0);
+  float specular = pow(max(dot(lightingNormal, halfDir), 0.0), 180.0);
+  float bevelCatch = pow(max(dot(lightingNormal, localLightDir), 0.0), 64.0);
   float normalizedLightIntensity = lightIntensity / 3.0;
-  vec3 directLightColor = mix(WHITE, lightColor, 0.55);
+  vec3 directLightColor = mix(WHITE, lightColor, 0.45);
+
+  // Dispersion in reflections/exit
+  vec3 R = reflect(viewDir, lightingNormal);
+  vec3 envReflection = getFakeEnv(R, localLightDir, directLightColor);
 
   float thickness = clamp(totalPathLength / cubeSize, 0.0, 1.5);
-  vec3 acrylicColor = mix(WHITE, filterColor, 0.7 + thickness * 0.25);
+  vec3 acrylicColor = mix(WHITE, filterColor, 0.82 + thickness * 0.18);
   acrylicColor = saturateColor(acrylicColor, saturation);
 
-  float softLight = 0.5 + lambert * normalizedLightIntensity * 0.5;
+  float softLight = 0.55 + lambert * normalizedLightIntensity * 0.45;
   vec3 color = acrylicColor * softLight * brightness;
-  color *= mix(WHITE, directLightColor, lambert * 0.45);
-  color += directLightColor * (fresnel * 0.4 + specular * normalizedLightIntensity * 0.7 + bevelCatch * normalizedLightIntensity * 0.2);
-  color = mix(color, WHITE, 0.02);
-  float alpha = clamp(opacity + thickness * 0.15 + fresnel * 0.4 + specular * 0.3, 0.0, 0.98);
+  color *= mix(WHITE, directLightColor, lambert * 0.35);
+  
+  // Add a bit of "rainbow" based on dispersion and view angle
+  float rainbow = fract(dot(currentRayDirG, vec3(1.0)) * 2.0 + dispersion * 10.0);
+  vec3 rainbowCol = mix(CYAN, mix(MAGENTA, YELLOW, rainbow), rainbow);
+  color = mix(color, rainbowCol, dispersion * 0.5 * thickness);
+
+  vec3 reflectionLayer = envReflection * (fresnel * 0.98 + 0.02) * reflectionStrength;
+  color = mix(color, reflectionLayer, fresnel * 0.75);
+  color += reflectionLayer;
+  color += directLightColor * (specular * normalizedLightIntensity * 1.5 + bevelCatch * normalizedLightIntensity * 0.6);
+  
+  color = mix(color, WHITE, 0.015);
+  float alpha = clamp(opacity + thickness * 0.1 + fresnel * 0.7 + specular * 0.6, 0.0, 0.98);
   gl_FragColor = vec4(color, alpha);
 }
 `
@@ -633,15 +683,17 @@ const cubeMaterial = new THREE.ShaderMaterial({
     lightIntensity: { value: directionalLight.intensity },
     cubeSize: { value: 2.0 },
     inverseModelMatrix: { value: new THREE.Matrix4() },
-    ior: { value: 1.49 },
+    ior: { value: 1.62 },
     opacity: { value: 0.58 },
-    absorptionStrength: { value: 0.62 },
-    saturation: { value: 1.25 },
+    absorptionStrength: { value: 0.88 },
+    saturation: { value: 1.35 },
     bounces: { value: 8.0 },
     reflectionBoost: { value: 1.0 },
     enableInternal: { value: true },
     brightness: { value: 1.2 },
-  },
+    reflectionStrength: { value: 0.85 },
+    dispersion: { value: 0.02 },
+    },
   vertexShader,
   fragmentShader,
   side: THREE.DoubleSide,
@@ -661,14 +713,16 @@ const params = {
   rotationXDegrees: 0,
   rotationYDegrees: 0,
   rotationZDegrees: 0,
-  ior: 1.49,
+  ior: 1.62,
   opacity: 0.58,
-  absorption: 0.62,
-  saturation: 1.25,
+  absorption: 0.88,
+  saturation: 1.35,
   bounces: 8,
   reflectionBoost: 1.0,
   enableInternal: true,
   brightness: 1.2,
+  reflectionStrength: 0.85,
+  dispersion: 0.02,
   lightAzimuthDegrees: 0,
   lightElevationDegrees: 63,
   lightDistance: baseLightDistance,
@@ -694,22 +748,29 @@ gui.add(params, 'brightness', 0.5, 3.0).name('Brightness').onChange((val: number
   groundUniforms.brightness.value = val
 })
 
-gui.add(params, 'ior', 1.0, 2.0).name('IOR').onChange((val: number) => {
+gui.add(params, 'ior', 1.0, 2.5).name('IOR').onChange((val: number) => {
   cubeMaterial.uniforms.ior.value = val
+  groundUniforms.ior.value = val
 })
 
-const acrylicFolder = gui.addFolder('Acrylic')
-acrylicFolder.add(params, 'opacity', 0.2, 0.9).name('Opacity').step(0.01).onChange((val: number) => {
+const materialFolder = gui.addFolder('Material')
+materialFolder.add(params, 'opacity', 0.2, 0.9).name('Opacity').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.opacity.value = val
 })
-acrylicFolder.add(params, 'absorption', 0.2, 1.0).name('Absorption').step(0.01).onChange((val: number) => {
+materialFolder.add(params, 'absorption', 0.2, 1.0).name('Absorption').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.absorptionStrength.value = val
   groundUniforms.absorptionStrength.value = val
 })
-acrylicFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).onChange((val: number) => {
+materialFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.saturation.value = val
 })
-acrylicFolder.open()
+materialFolder.add(params, 'reflectionStrength', 0.0, 2.0).name('Reflections').step(0.01).onChange((val: number) => {
+  cubeMaterial.uniforms.reflectionStrength.value = val
+})
+materialFolder.add(params, 'dispersion', 0.0, 0.1).name('Dispersion').step(0.001).onChange((val: number) => {
+  cubeMaterial.uniforms.dispersion.value = val
+})
+materialFolder.open()
 
 const reflectionFolder = gui.addFolder('Internal Reflection')
 reflectionFolder.add(params, 'enableInternal').name('Enabled').onChange((val: boolean) => {
