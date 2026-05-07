@@ -378,32 +378,22 @@ groundMaterial.onBeforeCompile = (shader) => {
       return filterColor;
     }
 
-    vec4 traceSoftCausticShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float spread, float absStrength, bool innerOnly) {
-      vec3 accumulatedFilter = vec3(0.0);
-      float occlusion = 0.0;
+    struct ShadowResult {
+      vec4 inner;
+      vec4 outer;
+    };
 
-      if (spread <= 0.0001) {
-        float bouncesNum = 0.0;
-        int axisMask = 0;
-        vec3 filterColor = traceShadow(rayOrigin, rayDir, boxHalfSize, absStrength, bouncesNum, axisMask);
-        int count = 0;
-        if ((axisMask & 1) != 0) count++;
-        if ((axisMask & 2) != 0) count++;
-        if ((axisMask & 4) != 0) count++;
-        
-        if (innerOnly) {
-          if (count == 1) {
-            float hit = hardBoxShadow(rayOrigin, rayDir, boxHalfSize);
-            return vec4(filterColor, hit);
-          }
-        } else {
-          float hit = hardBoxShadow(rayOrigin, rayDir, boxHalfSize);
-          if (hit > 0.0) {
-            vec3 resultColor = (count > 1) ? filterColor : vec3(0.02);
-            return vec4(resultColor, 1.0);
-          }
-        }
-        return vec4(WHITE, 0.0);
+    ShadowResult traceDualLayerShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float innerSpread, float outerSpread, float absStrength) {
+      vec3 innerFilter = vec3(0.0);
+      float innerOcclusion = 0.0;
+      vec3 outerFilter = vec3(0.0);
+      float outerOcclusion = 0.0;
+
+      // Early out if the ray doesn't hit the box even with maximum spread
+      float maxSpread = max(innerSpread, outerSpread);
+      vec2 tRange = intersectBox(rayOrigin, rayDir, boxHalfSize + vec3(maxSpread * 10.0));
+      if (tRange.x > tRange.y || tRange.y < 0.0) {
+        return ShadowResult(vec4(WHITE, 0.0), vec4(WHITE, 0.0));
       }
 
       vec3 up = abs(rayDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
@@ -411,38 +401,45 @@ groundMaterial.onBeforeCompile = (shader) => {
       vec3 bitangent = cross(rayDir, tangent);
       float rotation = shadowNoise(gl_FragCoord.xy) * 6.28318530718;
 
-      for (int i = 0; i < 64; i++) {
-        vec2 sampleOffset = diskSample(i, 64, rotation) * spread;
-        vec3 sampleDir = normalize(rayDir + tangent * sampleOffset.x + bitangent * sampleOffset.y);
-        float hit = hardBoxShadow(rayOrigin, sampleDir, boxHalfSize);
-
-        if (hit > 0.0) {
-          float bouncesNum = 0.0;
-          int axisMask = 0;
-          vec3 filterColor = traceShadow(rayOrigin, sampleDir, boxHalfSize, absStrength, bouncesNum, axisMask);
+      const int SAMPLES = 48;
+      for (int i = 0; i < SAMPLES; i++) {
+        vec2 disk = diskSample(i, SAMPLES, rotation);
+        
+        // Inner sample
+        vec3 innerDir = normalize(rayDir + (tangent * disk.x + bitangent * disk.y) * innerSpread);
+        if (hardBoxShadow(rayOrigin, innerDir, boxHalfSize) > 0.0) {
+          float bounces = 0.0;
+          int mask = 0;
+          vec3 col = traceShadow(rayOrigin, innerDir, boxHalfSize, absStrength, bounces, mask);
           int count = 0;
-          if ((axisMask & 1) != 0) count++;
-          if ((axisMask & 2) != 0) count++;
-          if ((axisMask & 4) != 0) count++;
-          
-          if (innerOnly) {
-            if (count == 1) {
-              accumulatedFilter += filterColor;
-              occlusion += 1.0;
-            }
-          } else {
-            occlusion += 1.0;
-            if (count > 1) {
-              accumulatedFilter += filterColor;
-            } else {
-              accumulatedFilter += vec3(0.02); // Dark fallback for primary areas in the outer trace
-            }
+          if ((mask & 1) != 0) count++;
+          if ((mask & 2) != 0) count++;
+          if ((mask & 4) != 0) count++;
+          if (count == 1) {
+            innerFilter += col;
+            innerOcclusion += 1.0;
           }
+        }
+
+        // Outer sample
+        vec3 outerDir = normalize(rayDir + (tangent * disk.x + bitangent * disk.y) * outerSpread);
+        if (hardBoxShadow(rayOrigin, outerDir, boxHalfSize) > 0.0) {
+          float bounces = 0.0;
+          int mask = 0;
+          vec3 col = traceShadow(rayOrigin, outerDir, boxHalfSize, absStrength, bounces, mask);
+          int count = 0;
+          if ((mask & 1) != 0) count++;
+          if ((mask & 2) != 0) count++;
+          if ((mask & 4) != 0) count++;
+          outerOcclusion += 1.0;
+          outerFilter += (count > 1) ? col : vec3(0.02);
         }
       }
 
-      if (occlusion <= 0.0) return vec4(WHITE, 0.0);
-      return vec4(accumulatedFilter / occlusion, smoothstep(0.0, 1.0, occlusion / 64.0));
+      vec4 innerRes = (innerOcclusion <= 0.0) ? vec4(WHITE, 0.0) : vec4(innerFilter / innerOcclusion, smoothstep(0.0, 1.0, innerOcclusion / float(SAMPLES)));
+      vec4 outerRes = (outerOcclusion <= 0.0) ? vec4(WHITE, 0.0) : vec4(outerFilter / outerOcclusion, smoothstep(0.0, 1.0, outerOcclusion / float(SAMPLES)));
+      
+      return ShadowResult(innerRes, outerRes);
     }`
   )
 
@@ -453,8 +450,9 @@ groundMaterial.onBeforeCompile = (shader) => {
     vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
     vec3 boxHalfSize = vec3(cubeSize * 0.5);
 
-    vec4 innerSoftCaustic = traceSoftCausticShadow(localPos, localLightDir, boxHalfSize, innerShadowSize, absorptionStrength, true);
-    vec4 outerSoftCaustic = traceSoftCausticShadow(localPos, localLightDir, boxHalfSize, outerShadowSize, absorptionStrength, false);
+    ShadowResult shadows = traceDualLayerShadow(localPos, localLightDir, boxHalfSize, innerShadowSize, outerShadowSize, absorptionStrength);
+    vec4 innerSoftCaustic = shadows.inner;
+    vec4 outerSoftCaustic = shadows.outer;
 
     vec3 innerTransmission = innerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
     vec3 innerNeutralShadow = vec3(1.0 - innerShadowOpacity);
