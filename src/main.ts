@@ -524,6 +524,10 @@ uniform float brightness;
 uniform float reflectionStrength;
 uniform float dispersion;
 uniform float internalColorOpacity;
+uniform float edgeWidth;
+uniform float edgeBrightness;
+uniform float edgeWhiteness;
+uniform float edgeAlpha;
 
 varying vec3 vWorldPosition;
 varying vec3 vLocalNormal;
@@ -585,6 +589,17 @@ vec3 saturateColor(vec3 color, float amount) {
   return mix(vec3(luminance), color, amount);
 }
 
+float getEdgeFactor(vec3 hitPoint, vec3 normal, vec3 boxHalfSize) {
+  vec3 normalizedPoint = abs(hitPoint) / boxHalfSize;
+  vec3 tangentMask = 1.0 - abs(normal);
+  float tangentEdge = max(
+    max(normalizedPoint.x * tangentMask.x, normalizedPoint.y * tangentMask.y),
+    normalizedPoint.z * tangentMask.z
+  );
+
+  return smoothstep(0.998 - edgeWidth, 0.998, tangentEdge);
+}
+
 void main() {
   vec3 localCameraPos = (inverseModelMatrix * vec4(cameraPos, 1.0)).xyz;
   vec3 localWorldPos = (inverseModelMatrix * vec4(vWorldPosition, 1.0)).xyz;
@@ -615,6 +630,7 @@ void main() {
   vec3 rayDirB = refract(viewDir, entryNormal, 1.0 / iorB);
   
   float totalPathLength = 0.0;
+  float internalEdgeFactor = 0.0;
   vec3 pG = p;
   vec3 currentRayDirG = rayDirG;
 
@@ -624,6 +640,9 @@ void main() {
       vec2 tInner = intersectBox(pG, currentRayDirG, boxHalfSize);
       pG += currentRayDirG * tInner.y;
       vec3 hitNormal = getFaceNormal(pG, boxHalfSize);
+      if (i == 0) {
+          internalEdgeFactor = getEdgeFactor(pG, hitNormal, boxHalfSize);
+      }
       totalPathLength += tInner.y;
       vec3 faceColor = mix(WHITE, getFaceColor(hitNormal), absorptionStrength);
       internalFilterColor *= mix(WHITE, faceColor, reflectionBoost * 0.98);
@@ -668,9 +687,10 @@ void main() {
   color = mix(color, reflectionLayer, fresnel * 0.75);
   color += reflectionLayer;
   color += directLightColor * (specular * normalizedLightIntensity * 1.5 + bevelCatch * normalizedLightIntensity * 0.6);
+  color += directLightColor * internalEdgeFactor * edgeBrightness * (0.12 + fresnel * 0.2 + normalizedLightIntensity * 0.1);
   
-  color = mix(color, WHITE, 0.015);
-  float alpha = clamp(opacity + thickness * 0.1 + fresnel * 0.7 + specular * 0.6, 0.0, 0.98);
+  color = mix(color, WHITE, 0.015 + internalEdgeFactor * edgeWhiteness);
+  float alpha = clamp(opacity + thickness * 0.1 + fresnel * 0.7 + specular * 0.6 + internalEdgeFactor * edgeAlpha, 0.0, 0.98);
   gl_FragColor = vec4(color, alpha);
 }
 `
@@ -694,6 +714,10 @@ const cubeMaterial = new THREE.ShaderMaterial({
     brightness: { value: 1.2 },
     reflectionStrength: { value: 0.85 },
     dispersion: { value: 0.02 },
+    edgeWidth: { value: 0.01 },
+    edgeBrightness: { value: 1.0 },
+    edgeWhiteness: { value: 0.05 },
+    edgeAlpha: { value: 0.01 },
     },
   vertexShader,
   fragmentShader,
@@ -725,6 +749,10 @@ const params = {
   reflectionStrength: 0.85,
   dispersion: 0.02,
   internalColorOpacity: 0.45,
+  edgeWidth: 0.01,
+  edgeBrightness: 1.0,
+  edgeWhiteness: 0.05,
+  edgeAlpha: 0.01,
   lightAzimuthDegrees: 135,
   lightElevationDegrees: 35,
   lightDistance: 3,
@@ -788,6 +816,21 @@ reflectionFolder.add(params, 'reflectionBoost', 0.0, 2.0).name('Reflection Boost
   cubeMaterial.uniforms.reflectionBoost.value = val
 })
 reflectionFolder.open()
+
+const edgeFolder = gui.addFolder('Internal Edges')
+edgeFolder.add(params, 'edgeWidth', 0.004, 0.06).name('Width').step(0.001).onChange((val: number) => {
+  cubeMaterial.uniforms.edgeWidth.value = val
+})
+edgeFolder.add(params, 'edgeBrightness', 0.0, 2.0).name('Brightness').step(0.01).onChange((val: number) => {
+  cubeMaterial.uniforms.edgeBrightness.value = val
+})
+edgeFolder.add(params, 'edgeWhiteness', 0.0, 0.2).name('Whiteness').step(0.001).onChange((val: number) => {
+  cubeMaterial.uniforms.edgeWhiteness.value = val
+})
+edgeFolder.add(params, 'edgeAlpha', 0.0, 0.08).name('Alpha').step(0.001).onChange((val: number) => {
+  cubeMaterial.uniforms.edgeAlpha.value = val
+})
+edgeFolder.open()
 
 const updateLight = () => {
   const azimuth = THREE.MathUtils.degToRad(params.lightAzimuthDegrees)
