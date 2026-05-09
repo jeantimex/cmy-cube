@@ -2,6 +2,8 @@
 
 An interactive 3D visualization of a CMY (Cyan, Magenta, Yellow) cube built with Three.js and custom GLSL shaders. The cube simulates the optical properties of transparent acrylic with subtractive color mixing, internal reflections, caustic shadows, and ground reflections.
 
+https://github.com/user-attachments/assets/b75e20e6-61dd-436f-912e-9fe8a13e77c8
+
 ## Subtractive Color Model
 
 The CMY cube uses **subtractive color mixing**, the same principle used in printing. Each pair of opposing faces is assigned one of the three subtractive primary colors:
