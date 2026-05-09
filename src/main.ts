@@ -219,6 +219,7 @@ const groundUniforms = {
   saturation: { value: 1.35 },
   brightness: { value: 1.2 },
   ior: { value: 1.62 },
+  shadowEnabled: { value: true },
   innerShadowSize: { value: 0.03 },
   innerShadowOpacity: { value: 0.35 },
   innerCausticShadowMix: { value: 1 },
@@ -240,6 +241,7 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.saturation = groundUniforms.saturation
   shader.uniforms.brightness = groundUniforms.brightness
   shader.uniforms.ior = groundUniforms.ior
+  shader.uniforms.shadowEnabled = groundUniforms.shadowEnabled
   shader.uniforms.innerShadowSize = groundUniforms.innerShadowSize
   shader.uniforms.innerShadowOpacity = groundUniforms.innerShadowOpacity
   shader.uniforms.innerCausticShadowMix = groundUniforms.innerCausticShadowMix
@@ -272,6 +274,7 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform float saturation;
     uniform float brightness;
     uniform float ior;
+    uniform bool shadowEnabled;
     uniform float innerShadowSize;
     uniform float innerShadowOpacity;
     uniform float innerCausticShadowMix;
@@ -468,25 +471,27 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.fragmentShader = shader.fragmentShader.replace(
     '#include <dithering_fragment>',
     `#include <dithering_fragment>
-    vec3 localPos = (inverseModelMatrix * vec4(vGroundWorldPosition, 1.0)).xyz;
-    vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
-    vec3 boxHalfSize = vec3(cubeSize * 0.5);
+    if (shadowEnabled) {
+      vec3 localPos = (inverseModelMatrix * vec4(vGroundWorldPosition, 1.0)).xyz;
+      vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
+      vec3 boxHalfSize = vec3(cubeSize * 0.5);
 
-    ShadowResult shadows = traceDualLayerShadow(localPos, localLightDir, boxHalfSize, innerShadowSize, outerShadowSize, absorptionStrength);
-    vec4 innerSoftCaustic = shadows.inner;
-    vec4 outerSoftCaustic = shadows.outer;
+      ShadowResult shadows = traceDualLayerShadow(localPos, localLightDir, boxHalfSize, innerShadowSize, outerShadowSize, absorptionStrength);
+      vec4 innerSoftCaustic = shadows.inner;
+      vec4 outerSoftCaustic = shadows.outer;
 
-    vec3 innerTransmission = innerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
-    vec3 innerNeutralShadow = vec3(1.0 - innerShadowOpacity);
-    vec3 innerColoredShadow = mix(innerNeutralShadow, innerTransmission * brightness, 0.35);
-    vec3 innerShadowResult = mix(WHITE, mix(innerNeutralShadow, innerColoredShadow, innerCausticShadowMix), innerSoftCaustic.a);
+      vec3 innerTransmission = innerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
+      vec3 innerNeutralShadow = vec3(1.0 - innerShadowOpacity);
+      vec3 innerColoredShadow = mix(innerNeutralShadow, innerTransmission * brightness, 0.35);
+      vec3 innerShadowResult = mix(WHITE, mix(innerNeutralShadow, innerColoredShadow, innerCausticShadowMix), innerSoftCaustic.a);
 
-    vec3 outerTransmission = outerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
-    vec3 outerNeutralShadow = vec3(1.0 - outerShadowOpacity);
-    vec3 outerColoredShadow = mix(outerNeutralShadow, outerTransmission * brightness, 0.35);
-    vec3 outerShadowResult = mix(WHITE, mix(outerNeutralShadow, outerColoredShadow, outerCausticShadowMix), outerSoftCaustic.a);
+      vec3 outerTransmission = outerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
+      vec3 outerNeutralShadow = vec3(1.0 - outerShadowOpacity);
+      vec3 outerColoredShadow = mix(outerNeutralShadow, outerTransmission * brightness, 0.35);
+      vec3 outerShadowResult = mix(WHITE, mix(outerNeutralShadow, outerColoredShadow, outerCausticShadowMix), outerSoftCaustic.a);
 
-    gl_FragColor.rgb *= mix(outerShadowResult, innerShadowResult, innerSoftCaustic.a);`
+      gl_FragColor.rgb *= mix(outerShadowResult, innerShadowResult, innerSoftCaustic.a);
+    }`
   )
 }
 
@@ -888,6 +893,7 @@ const params = {
   lightBrightness: directionalLight.intensity,
   lightWarmth: 0.5,
   ambientBrightness: hemiLight.intensity,
+  shadowEnabled: true,
   innerShadowSize: groundUniforms.innerShadowSize.value,
   innerShadowOpacity: groundUniforms.innerShadowOpacity.value,
   innerCausticShadowMix: groundUniforms.innerCausticShadowMix.value,
@@ -1039,6 +1045,9 @@ lightAppearanceFolder.add(params, 'ambientBrightness', 0, 6).name('Ambient').ste
 lightAppearanceFolder.open()
 
 const shadowFolder = gui.addFolder('Soft Shadow')
+shadowFolder.add(params, 'shadowEnabled').name('Enabled').onChange((val: boolean) => {
+  groundUniforms.shadowEnabled.value = val
+})
 
 const innerShadowFolder = shadowFolder.addFolder('Inner (Sharp)')
 innerShadowFolder.add(params, 'innerShadowSize', 0.0, 0.1).name('Light Size').step(0.001).onChange((val: number) => {
