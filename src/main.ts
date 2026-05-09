@@ -775,6 +775,92 @@ const cube = new THREE.Mesh(
 cube.castShadow = false
 scene.add(cube)
 
+// Reflection cube - mirrored below the ground plane with shadow overlay
+const reflectionFragmentShader = fragmentShader.replace(
+  'void main() {',
+  `uniform float reflectionOpacity;
+uniform float reflectionFade;
+uniform mat4 mainCubeInverseMatrix;
+uniform float shadowOpacity;
+
+float calcShadow(vec3 worldPos, vec3 lightDir, mat4 invMatrix, float cubeHalfSize) {
+  vec3 localPos = (invMatrix * vec4(worldPos, 1.0)).xyz;
+  vec3 localLightDir = normalize((invMatrix * vec4(lightDir, 0.0)).xyz);
+  vec3 boxHalfSize = vec3(cubeHalfSize - 0.02);
+
+  vec3 invDir = 1.0 / localLightDir;
+  vec3 t1 = (-boxHalfSize - localPos) * invDir;
+  vec3 t2 = (boxHalfSize - localPos) * invDir;
+  vec3 tMin = min(t1, t2);
+  vec3 tMax = max(t1, t2);
+  float tNear = max(max(tMin.x, tMin.y), tMin.z);
+  float tFar = min(min(tMax.x, tMax.y), tMax.z);
+
+  float inShadow = (tNear < tFar - 0.01 && tFar > 0.01) ? 1.0 : 0.0;
+  return inShadow;
+}
+
+void main() {`
+).replace(
+  'gl_FragColor = vec4(color, alpha);',
+  `float distFromGround = abs(vWorldPosition.y + 1.0);
+float fadeOut = 1.0 - smoothstep(0.0, reflectionFade, distFromGround);
+
+// Calculate shadow from the main cube onto this reflection point
+// Use ground plane position (y=-1) with same x,z as the reflection point
+vec3 groundPos = vec3(vWorldPosition.x, -0.99, vWorldPosition.z);
+float shadow = calcShadow(groundPos, lightDirection, mainCubeInverseMatrix, cubeSize * 0.5);
+vec3 shadowedColor = color * (1.0 - shadow * shadowOpacity);
+
+float finalAlpha = alpha * reflectionOpacity * fadeOut;
+gl_FragColor = vec4(shadowedColor, finalAlpha);`
+)
+
+const reflectionMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    cameraPos: { value: camera.position },
+    lightDirection: { value: directionalLight.position.clone().normalize() },
+    lightColor: { value: directionalLight.color },
+    lightIntensity: { value: directionalLight.intensity },
+    cubeSize: { value: 2.0 },
+    inverseModelMatrix: { value: new THREE.Matrix4() },
+    ior: { value: 1.62 },
+    opacity: { value: 0.58 },
+    absorptionStrength: { value: 0.88 },
+    colorDarkness: { value: 0.0 },
+    saturation: { value: 1.35 },
+    bounces: { value: 8.0 },
+    reflectionBoost: { value: 1.0 },
+    internalColorOpacity: { value: 0.45 },
+    enableInternal: { value: true },
+    brightness: { value: 1.2 },
+    reflectionStrength: { value: 0.85 },
+    dispersion: { value: 0.02 },
+    edgeWidth: { value: 0.01 },
+    edgeBrightness: { value: 1.0 },
+    edgeWhiteness: { value: 0.05 },
+    edgeAlpha: { value: 0.01 },
+    reflectionOpacity: { value: 0.1 },
+    reflectionFade: { value: 2.0 },
+    mainCubeInverseMatrix: { value: new THREE.Matrix4() },
+    shadowOpacity: { value: 0.5 },
+  },
+  vertexShader,
+  fragmentShader: reflectionFragmentShader,
+  side: THREE.DoubleSide,
+  transparent: true,
+  depthWrite: false,
+})
+
+const reflectionCube = new THREE.Mesh(
+  new THREE.BoxGeometry(2, 2, 2),
+  reflectionMaterial,
+)
+reflectionCube.scale.y = -1
+reflectionCube.position.y = -2
+reflectionCube.renderOrder = -1
+scene.add(reflectionCube)
+
 const gui = new GUI()
 const params = {
   rotationXDegrees: 0,
@@ -808,6 +894,10 @@ const params = {
   outerShadowSize: groundUniforms.outerShadowSize.value,
   outerShadowOpacity: groundUniforms.outerShadowOpacity.value,
   outerCausticShadowMix: groundUniforms.outerCausticShadowMix.value,
+  reflectionEnabled: true,
+  reflectionOpacity: 0.1,
+  reflectionFade: 2.0,
+  reflectionShadowOpacity: 0.5,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -818,65 +908,81 @@ rotationFolder.open()
 
 gui.add(params, 'brightness', 0.5, 3.0).name('Brightness').onChange((val: number) => {
   cubeMaterial.uniforms.brightness.value = val
+  reflectionMaterial.uniforms.brightness.value = val
   groundUniforms.brightness.value = val
 })
 
 gui.add(params, 'ior', 1.0, 2.5).name('IOR').onChange((val: number) => {
   cubeMaterial.uniforms.ior.value = val
+  reflectionMaterial.uniforms.ior.value = val
   groundUniforms.ior.value = val
 })
 
 const materialFolder = gui.addFolder('Material')
 materialFolder.add(params, 'opacity', 0.2, 0.9).name('Opacity').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.opacity.value = val
+  reflectionMaterial.uniforms.opacity.value = val
 })
 materialFolder.add(params, 'absorption', 0.2, 1.0).name('Absorption').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.absorptionStrength.value = val
+  reflectionMaterial.uniforms.absorptionStrength.value = val
   groundUniforms.absorptionStrength.value = val
 })
 materialFolder.add(params, 'colorDarkness', 0.0, 2.0).name('Color Darkness').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.colorDarkness.value = val
+  reflectionMaterial.uniforms.colorDarkness.value = val
   groundUniforms.colorDarkness.value = val
 })
 materialFolder.add(params, 'saturation', 0.6, 1.8).name('Saturation').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.saturation.value = val
+  reflectionMaterial.uniforms.saturation.value = val
   groundUniforms.saturation.value = val
 })
 materialFolder.add(params, 'reflectionStrength', 0.0, 2.0).name('Reflections').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.reflectionStrength.value = val
+  reflectionMaterial.uniforms.reflectionStrength.value = val
 })
 materialFolder.add(params, 'dispersion', 0.0, 0.1).name('Dispersion').step(0.001).onChange((val: number) => {
   cubeMaterial.uniforms.dispersion.value = val
+  reflectionMaterial.uniforms.dispersion.value = val
 })
 materialFolder.add(params, 'internalColorOpacity', 0.0, 1.0).name('Internal Color').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.internalColorOpacity.value = val
+  reflectionMaterial.uniforms.internalColorOpacity.value = val
 })
 materialFolder.open()
 
-const reflectionFolder = gui.addFolder('Internal Reflection')
-reflectionFolder.add(params, 'enableInternal').name('Enabled').onChange((val: boolean) => {
+const internalReflectionFolder = gui.addFolder('Internal Reflection')
+internalReflectionFolder.add(params, 'enableInternal').name('Enabled').onChange((val: boolean) => {
   cubeMaterial.uniforms.enableInternal.value = val
+  reflectionMaterial.uniforms.enableInternal.value = val
 })
-reflectionFolder.add(params, 'bounces', 1, 12).step(1).name('Max Bounces').onChange((val: number) => {
+internalReflectionFolder.add(params, 'bounces', 1, 12).step(1).name('Max Bounces').onChange((val: number) => {
   cubeMaterial.uniforms.bounces.value = val
+  reflectionMaterial.uniforms.bounces.value = val
 })
-reflectionFolder.add(params, 'reflectionBoost', 0.0, 2.0).name('Reflection Boost').step(0.05).onChange((val: number) => {
+internalReflectionFolder.add(params, 'reflectionBoost', 0.0, 2.0).name('Reflection Boost').step(0.05).onChange((val: number) => {
   cubeMaterial.uniforms.reflectionBoost.value = val
+  reflectionMaterial.uniforms.reflectionBoost.value = val
 })
-reflectionFolder.open()
+internalReflectionFolder.open()
 
 const edgeFolder = gui.addFolder('Internal Edges')
 edgeFolder.add(params, 'edgeWidth', 0.004, 0.06).name('Width').step(0.001).onChange((val: number) => {
   cubeMaterial.uniforms.edgeWidth.value = val
+  reflectionMaterial.uniforms.edgeWidth.value = val
 })
 edgeFolder.add(params, 'edgeBrightness', 0.0, 2.0).name('Brightness').step(0.01).onChange((val: number) => {
   cubeMaterial.uniforms.edgeBrightness.value = val
+  reflectionMaterial.uniforms.edgeBrightness.value = val
 })
 edgeFolder.add(params, 'edgeWhiteness', 0.0, 0.2).name('Whiteness').step(0.001).onChange((val: number) => {
   cubeMaterial.uniforms.edgeWhiteness.value = val
+  reflectionMaterial.uniforms.edgeWhiteness.value = val
 })
 edgeFolder.add(params, 'edgeAlpha', 0.0, 0.08).name('Alpha').step(0.001).onChange((val: number) => {
   cubeMaterial.uniforms.edgeAlpha.value = val
+  reflectionMaterial.uniforms.edgeAlpha.value = val
 })
 edgeFolder.open()
 
@@ -960,6 +1066,21 @@ outerShadowFolder.open()
 
 shadowFolder.open()
 
+const reflectionFolder = gui.addFolder('Ground Reflection')
+reflectionFolder.add(params, 'reflectionEnabled').name('Enabled').onChange((val: boolean) => {
+  reflectionCube.visible = val
+})
+reflectionFolder.add(params, 'reflectionOpacity', 0.0, 1.0).name('Opacity').step(0.01).onChange((val: number) => {
+  reflectionMaterial.uniforms.reflectionOpacity.value = val
+})
+reflectionFolder.add(params, 'reflectionFade', 0.5, 4.0).name('Fade Distance').step(0.1).onChange((val: number) => {
+  reflectionMaterial.uniforms.reflectionFade.value = val
+})
+reflectionFolder.add(params, 'reflectionShadowOpacity', 0.0, 1.0).name('Shadow').step(0.01).onChange((val: number) => {
+  reflectionMaterial.uniforms.shadowOpacity.value = val
+})
+reflectionFolder.open()
+
 updateLightColor()
 gui.close()
 
@@ -986,6 +1107,20 @@ function animate() {
   cubeMaterial.uniforms.cameraPos.value.copy(camera.position)
   cubeMaterial.uniforms.inverseModelMatrix.value.copy(invMatrix)
   groundUniforms.inverseModelMatrix.value.copy(invMatrix)
+
+  // Sync reflection cube
+  reflectionCube.rotation.x = -cube.rotation.x
+  reflectionCube.rotation.y = cube.rotation.y
+  reflectionCube.rotation.z = -cube.rotation.z
+  reflectionCube.updateMatrixWorld()
+  const reflectionInvMatrix = reflectionCube.matrixWorld.clone().invert()
+  reflectionMaterial.uniforms.cameraPos.value.copy(camera.position)
+  reflectionMaterial.uniforms.inverseModelMatrix.value.copy(reflectionInvMatrix)
+  reflectionMaterial.uniforms.mainCubeInverseMatrix.value.copy(invMatrix)
+  reflectionMaterial.uniforms.lightDirection.value.copy(cubeMaterial.uniforms.lightDirection.value)
+  reflectionMaterial.uniforms.lightColor.value.copy(cubeMaterial.uniforms.lightColor.value)
+  reflectionMaterial.uniforms.lightIntensity.value = cubeMaterial.uniforms.lightIntensity.value
+
   renderer.render(scene, camera)
   requestAnimationFrame(animate)
 }
