@@ -219,15 +219,7 @@ const groundUniforms = {
   saturation: { value: 1.35 },
   brightness: { value: 1.2 },
   ior: { value: 1.62 },
-  // Old soft shadow system (disabled by default)
-  shadowEnabled: { value: false },
-  innerShadowSize: { value: 0.03 },
-  innerShadowOpacity: { value: 0.35 },
-  innerCausticShadowMix: { value: 1 },
-  outerShadowSize: { value: 0.03 },
-  outerShadowOpacity: { value: 0.5 },
-  outerCausticShadowMix: { value: 0.2 },
-  // New caustic shadow system
+  // Caustic shadow system
   causticShadowEnabled: { value: true },
   causticSoftness: { value: 0.04 },
   causticIntensity: { value: 1.0 },
@@ -247,13 +239,6 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.saturation = groundUniforms.saturation
   shader.uniforms.brightness = groundUniforms.brightness
   shader.uniforms.ior = groundUniforms.ior
-  shader.uniforms.shadowEnabled = groundUniforms.shadowEnabled
-  shader.uniforms.innerShadowSize = groundUniforms.innerShadowSize
-  shader.uniforms.innerShadowOpacity = groundUniforms.innerShadowOpacity
-  shader.uniforms.innerCausticShadowMix = groundUniforms.innerCausticShadowMix
-  shader.uniforms.outerShadowSize = groundUniforms.outerShadowSize
-  shader.uniforms.outerShadowOpacity = groundUniforms.outerShadowOpacity
-  shader.uniforms.outerCausticShadowMix = groundUniforms.outerCausticShadowMix
   shader.uniforms.causticShadowEnabled = groundUniforms.causticShadowEnabled
   shader.uniforms.causticSoftness = groundUniforms.causticSoftness
   shader.uniforms.causticIntensity = groundUniforms.causticIntensity
@@ -284,13 +269,6 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform float saturation;
     uniform float brightness;
     uniform float ior;
-    uniform bool shadowEnabled;
-    uniform float innerShadowSize;
-    uniform float innerShadowOpacity;
-    uniform float innerCausticShadowMix;
-    uniform float outerShadowSize;
-    uniform float outerShadowOpacity;
-    uniform float outerCausticShadowMix;
     uniform bool causticShadowEnabled;
     uniform float causticSoftness;
     uniform float causticIntensity;
@@ -345,11 +323,6 @@ groundMaterial.onBeforeCompile = (shader) => {
       return mix(vec3(luminance), color, amount);
     }
 
-    float hardBoxShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
-      vec2 t = intersectBox(rayOrigin, rayDir, boxHalfSize);
-      return (t.x < t.y && t.y > 0.0) ? 1.0 : 0.0;
-    }
-
     float shadowNoise(vec2 seed) {
       return fract(sin(dot(seed, vec2(12.9898, 78.233))) * 43758.5453);
     }
@@ -359,126 +332,6 @@ groundMaterial.onBeforeCompile = (shader) => {
       float radius = sqrt((float(sampleIndex) + 0.5) / float(samplesCount));
       float theta = float(sampleIndex) * goldenAngle + rotation;
       return vec2(cos(theta), sin(theta)) * radius;
-    }
-
-    float softBoxShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float spread) {
-      if (spread <= 0.0001) return hardBoxShadow(rayOrigin, rayDir, boxHalfSize);
-
-      vec3 up = abs(rayDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-      vec3 tangent = normalize(cross(up, rayDir));
-      vec3 bitangent = cross(rayDir, tangent);
-      float rotation = shadowNoise(gl_FragCoord.xy) * 6.28318530718;
-      float occlusion = 0.0;
-
-      for (int i = 0; i < 96; i++) {
-        vec2 sampleOffset = diskSample(i, 96, rotation) * spread;
-        vec3 sampleDir = normalize(rayDir + tangent * sampleOffset.x + bitangent * sampleOffset.y);
-        occlusion += hardBoxShadow(rayOrigin, sampleDir, boxHalfSize);
-      }
-
-      return smoothstep(0.0, 1.0, occlusion / 96.0);
-    }
-
-    vec3 traceShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float absStrength, out float bounceCount, out int axisMask) {
-      vec3 p = rayOrigin;
-      vec3 filterColor = WHITE;
-      bounceCount = 0.0;
-      axisMask = 0;
-      vec2 t = intersectBox(p, rayDir, boxHalfSize);
-      if (t.x > t.y || t.y < 0.0) return WHITE;
-      p = rayOrigin + rayDir * max(t.x, 0.0);
-      vec3 n = getFaceNormal(p, boxHalfSize);
-      
-      vec3 absN = abs(n);
-      if (absN.x > 0.5) axisMask |= 1;
-      else if (absN.y > 0.5) axisMask |= 2;
-      else axisMask |= 4;
-
-      float safeIor = max(ior, 0.01);
-      vec3 currentRayDir = refract(rayDir, n, 1.0 / safeIor);
-      filterColor *= mix(WHITE, getFaceColor(n), absStrength);
-      for (int i = 0; i < 4; i++) {
-        p += currentRayDir * 0.001;
-        vec2 tInner = intersectBox(p, currentRayDir, boxHalfSize);
-        p += currentRayDir * tInner.y;
-        vec3 hitNormal = getFaceNormal(p, boxHalfSize);
-        
-        vec3 absHitN = abs(hitNormal);
-        if (absHitN.x > 0.5) axisMask |= 1;
-        else if (absHitN.y > 0.5) axisMask |= 2;
-        else axisMask |= 4;
-
-        filterColor *= mix(WHITE, getFaceColor(hitNormal), absStrength);
-        vec3 exitRayDir = refract(currentRayDir, -hitNormal, safeIor);
-        if (length(exitRayDir) > 0.1) break; 
-        currentRayDir = reflect(currentRayDir, -hitNormal);
-        bounceCount += 1.0;
-      }
-      return saturateColor(filterColor, saturation);
-    }
-
-    struct ShadowResult {
-      vec4 inner;
-      vec4 outer;
-    };
-
-    ShadowResult traceDualLayerShadow(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize, float innerSpread, float outerSpread, float absStrength) {
-      vec3 innerFilter = vec3(0.0);
-      float innerOcclusion = 0.0;
-      vec3 outerFilter = vec3(0.0);
-      float outerOcclusion = 0.0;
-
-      // Early out if the ray doesn't hit the box even with maximum spread
-      float maxSpread = max(innerSpread, outerSpread);
-      vec2 tRange = intersectBox(rayOrigin, rayDir, boxHalfSize + vec3(maxSpread * 10.0));
-      if (tRange.x > tRange.y || tRange.y < 0.0) {
-        return ShadowResult(vec4(WHITE, 0.0), vec4(WHITE, 0.0));
-      }
-
-      vec3 up = abs(rayDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-      vec3 tangent = normalize(cross(up, rayDir));
-      vec3 bitangent = cross(rayDir, tangent);
-      float rotation = shadowNoise(gl_FragCoord.xy) * 6.28318530718;
-
-      const int SAMPLES = 48;
-      for (int i = 0; i < SAMPLES; i++) {
-        vec2 disk = diskSample(i, SAMPLES, rotation);
-        
-        // Inner sample
-        vec3 innerDir = normalize(rayDir + (tangent * disk.x + bitangent * disk.y) * innerSpread);
-        if (hardBoxShadow(rayOrigin, innerDir, boxHalfSize) > 0.0) {
-          float bounces = 0.0;
-          int mask = 0;
-          vec3 col = traceShadow(rayOrigin, innerDir, boxHalfSize, absStrength, bounces, mask);
-          int count = 0;
-          if ((mask & 1) != 0) count++;
-          if ((mask & 2) != 0) count++;
-          if ((mask & 4) != 0) count++;
-          if (count == 1) {
-            innerFilter += col;
-            innerOcclusion += 1.0;
-          }
-        }
-
-        // Outer sample
-        vec3 outerDir = normalize(rayDir + (tangent * disk.x + bitangent * disk.y) * outerSpread);
-        if (hardBoxShadow(rayOrigin, outerDir, boxHalfSize) > 0.0) {
-          float bounces = 0.0;
-          int mask = 0;
-          vec3 col = traceShadow(rayOrigin, outerDir, boxHalfSize, absStrength, bounces, mask);
-          int count = 0;
-          if ((mask & 1) != 0) count++;
-          if ((mask & 2) != 0) count++;
-          if ((mask & 4) != 0) count++;
-          outerOcclusion += 1.0;
-          outerFilter += (count > 1) ? col : vec3(0.02);
-        }
-      }
-
-      vec4 innerRes = (innerOcclusion <= 0.0) ? vec4(WHITE, 0.0) : vec4(innerFilter / innerOcclusion, smoothstep(0.0, 1.0, innerOcclusion / float(SAMPLES)));
-      vec4 outerRes = (outerOcclusion <= 0.0) ? vec4(WHITE, 0.0) : vec4(outerFilter / outerOcclusion, smoothstep(0.0, 1.0, outerOcclusion / float(SAMPLES)));
-
-      return ShadowResult(innerRes, outerRes);
     }
 
     // Physics-based caustic shadow: traces refracted light path through cube
@@ -579,7 +432,7 @@ groundMaterial.onBeforeCompile = (shader) => {
     vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
     vec3 boxHalfSize = vec3(cubeSize * 0.5);
 
-    // New physics-based caustic shadow
+    // Physics-based caustic shadow
     if (causticShadowEnabled && lightIntensity > 0.01) {
       vec4 caustic = traceCausticShadow(localPos, localLightDir, boxHalfSize, ior, causticSoftness, causticSamples);
 
@@ -598,25 +451,6 @@ groundMaterial.onBeforeCompile = (shader) => {
       shadowResult = mix(WHITE, shadowResult, shadowFade);
 
       gl_FragColor.rgb *= shadowResult;
-    }
-
-    // Old soft shadow system (can be enabled alongside or instead)
-    if (shadowEnabled) {
-      ShadowResult shadows = traceDualLayerShadow(localPos, localLightDir, boxHalfSize, innerShadowSize, outerShadowSize, absorptionStrength);
-      vec4 innerSoftCaustic = shadows.inner;
-      vec4 outerSoftCaustic = shadows.outer;
-
-      vec3 innerTransmission = innerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
-      vec3 innerNeutralShadow = vec3(1.0 - innerShadowOpacity);
-      vec3 innerColoredShadow = mix(innerNeutralShadow, innerTransmission * brightness, 0.35);
-      vec3 innerShadowResult = mix(WHITE, mix(innerNeutralShadow, innerColoredShadow, innerCausticShadowMix), innerSoftCaustic.a);
-
-      vec3 outerTransmission = outerSoftCaustic.rgb * mix(WHITE, lightColor, 0.6);
-      vec3 outerNeutralShadow = vec3(1.0 - outerShadowOpacity);
-      vec3 outerColoredShadow = mix(outerNeutralShadow, outerTransmission * brightness, 0.35);
-      vec3 outerShadowResult = mix(WHITE, mix(outerNeutralShadow, outerColoredShadow, outerCausticShadowMix), outerSoftCaustic.a);
-
-      gl_FragColor.rgb *= mix(outerShadowResult, innerShadowResult, innerSoftCaustic.a);
     }`
   )
 }
@@ -1021,13 +855,6 @@ const params = {
   lightBrightness: directionalLight.intensity,
   lightWarmth: 0.5,
   ambientBrightness: hemiLight.intensity,
-  shadowEnabled: false,
-  innerShadowSize: groundUniforms.innerShadowSize.value,
-  innerShadowOpacity: groundUniforms.innerShadowOpacity.value,
-  innerCausticShadowMix: groundUniforms.innerCausticShadowMix.value,
-  outerShadowSize: groundUniforms.outerShadowSize.value,
-  outerShadowOpacity: groundUniforms.outerShadowOpacity.value,
-  outerCausticShadowMix: groundUniforms.outerCausticShadowMix.value,
   reflectionEnabled: true,
   reflectionOpacity: 0.1,
   reflectionFade: 2.0,
@@ -1191,37 +1018,6 @@ causticFolder.add(params, 'causticSamples', 8, 64).name('Samples').step(8).onCha
   groundUniforms.causticSamples.value = val
 })
 causticFolder.open()
-
-const shadowFolder = gui.addFolder('Soft Shadow (Legacy)')
-shadowFolder.add(params, 'shadowEnabled').name('Enabled').onChange((val: boolean) => {
-  groundUniforms.shadowEnabled.value = val
-})
-
-const innerShadowFolder = shadowFolder.addFolder('Inner (Sharp)')
-innerShadowFolder.add(params, 'innerShadowSize', 0.0, 0.1).name('Light Size').step(0.001).onChange((val: number) => {
-  groundUniforms.innerShadowSize.value = val
-})
-innerShadowFolder.add(params, 'innerShadowOpacity', 0.0, 1.0).name('Opacity').step(0.01).onChange((val: number) => {
-  groundUniforms.innerShadowOpacity.value = val
-})
-innerShadowFolder.add(params, 'innerCausticShadowMix', 0.0, 1.0).name('Color Mix').step(0.01).onChange((val: number) => {
-  groundUniforms.innerCausticShadowMix.value = val
-})
-innerShadowFolder.close()
-
-const outerShadowFolder = shadowFolder.addFolder('Outer (Soft)')
-outerShadowFolder.add(params, 'outerShadowSize', 0.0, 0.25).name('Light Size').step(0.005).onChange((val: number) => {
-  groundUniforms.outerShadowSize.value = val
-})
-outerShadowFolder.add(params, 'outerShadowOpacity', 0.0, 1.0).name('Opacity').step(0.01).onChange((val: number) => {
-  groundUniforms.outerShadowOpacity.value = val
-})
-outerShadowFolder.add(params, 'outerCausticShadowMix', 0.0, 1.0).name('Color Mix').step(0.01).onChange((val: number) => {
-  groundUniforms.outerCausticShadowMix.value = val
-})
-outerShadowFolder.close()
-
-shadowFolder.close()
 
 const reflectionFolder = gui.addFolder('Ground Reflection')
 reflectionFolder.add(params, 'reflectionEnabled').name('Enabled').onChange((val: boolean) => {
