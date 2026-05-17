@@ -61,8 +61,10 @@ const groundUniforms = {
   ior: { value: 1.62 },
   // Shadow components
   umbraEnabled: { value: true },
+  causticsEnabled: { value: true },
   shadowSoftness: { value: 0.01 },
   shadowSamples: { value: 32 },
+  transmission: { value: 0.5 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
@@ -79,8 +81,10 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.brightness = groundUniforms.brightness
   shader.uniforms.ior = groundUniforms.ior
   shader.uniforms.umbraEnabled = groundUniforms.umbraEnabled
+  shader.uniforms.causticsEnabled = groundUniforms.causticsEnabled
   shader.uniforms.shadowSoftness = groundUniforms.shadowSoftness
   shader.uniforms.shadowSamples = groundUniforms.shadowSamples
+  shader.uniforms.transmission = groundUniforms.transmission
 
   shader.vertexShader = shader.vertexShader.replace(
     '#include <common>',
@@ -102,10 +106,37 @@ groundMaterial.onBeforeCompile = (shader) => {
     uniform float ambientIntensity;
     uniform float cubeSize;
     uniform mat4 inverseModelMatrix;
+    uniform float ior;
+    uniform float absorptionStrength;
+    uniform float colorDarkness;
     uniform bool umbraEnabled;
+    uniform bool causticsEnabled;
     uniform float shadowSoftness;
     uniform int shadowSamples;
+    uniform float transmission;
     varying vec3 vGroundWorldPosition;
+
+    // CMY face colors
+    const vec3 CYAN = vec3(0.0, 0.92, 1.0);
+    const vec3 MAGENTA = vec3(1.0, 0.05, 0.9);
+    const vec3 YELLOW = vec3(1.0, 0.95, 0.0);
+    const vec3 WHITE = vec3(1.0, 1.0, 1.0);
+
+    vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
+      vec3 p = hitPoint / boxHalfSize;
+      vec3 absP = abs(p);
+      float maxComp = max(max(absP.x, absP.y), absP.z);
+      if (absP.x >= maxComp - 0.001) return vec3(sign(p.x), 0.0, 0.0);
+      if (absP.y >= maxComp - 0.001) return vec3(0.0, sign(p.y), 0.0);
+      return vec3(0.0, 0.0, sign(p.z));
+    }
+
+    vec3 getFaceColor(vec3 normal) {
+      vec3 absNormal = abs(normal);
+      if (absNormal.x > 0.5) return YELLOW;
+      if (absNormal.y > 0.5) return MAGENTA;
+      return CYAN;
+    }
 
     // PCSS helper functions
     float shadowRandom(vec2 seed) {
@@ -131,7 +162,138 @@ groundMaterial.onBeforeCompile = (shader) => {
       return vec2(tNear, tFar);
     }
 
-    // PCSS dark shadow calculation
+    // Trace light through cube - returns vec4(color, transmissionFactor)
+    // transmissionFactor: 1.0 = fully transmitted, 0.0 = fully blocked
+    vec4 traceTransmission(vec3 groundPos, vec3 rayDir, vec3 boxHalfSize) {
+      vec2 t = intersectBox(groundPos, rayDir, boxHalfSize);
+
+      // Ray misses cube - full white light, not in shadow
+      if (t.x > t.y || t.y < 0.0) {
+        return vec4(WHITE, -1.0); // -1 signals "not hitting cube"
+      }
+
+      // Entry point and face color
+      vec3 entryPoint = groundPos + rayDir * t.x;
+      vec3 entryNormal = getFaceNormal(entryPoint, boxHalfSize);
+      vec3 entryColor = getFaceColor(entryNormal);
+
+      // Refract into cube
+      float eta = 1.0 / ior;
+      vec3 refractedDir = refract(rayDir, entryNormal, eta);
+
+      // Total internal reflection at entry - light is blocked
+      if (length(refractedDir) < 0.001) {
+        return vec4(vec3(0.0), 0.0); // blocked
+      }
+
+      // Trace to exit point
+      vec3 insideOrigin = entryPoint + refractedDir * 0.001;
+      vec2 tInner = intersectBox(insideOrigin, refractedDir, boxHalfSize);
+      vec3 exitPoint = insideOrigin + refractedDir * tInner.y;
+      vec3 exitNormal = getFaceNormal(exitPoint, boxHalfSize);
+      vec3 exitColor = getFaceColor(exitNormal);
+
+      // Check for TIR at exit
+      vec3 exitDir = refract(refractedDir, -exitNormal, ior);
+      if (length(exitDir) < 0.001) {
+        return vec4(vec3(0.0), 0.0); // blocked by TIR
+      }
+
+      // Subtractive color mixing: entry × exit
+      vec3 colorFilter = entryColor * exitColor;
+
+      // Apply absorption strength for color saturation
+      colorFilter = mix(WHITE, colorFilter, absorptionStrength);
+
+      return vec4(colorFilter, 1.0); // transmitted with color
+    }
+
+    // PCSS shadow calculation with proper light transport
+    // Returns: vec4(illuminationColor, inShadowRegion)
+    // illuminationColor: the light color reaching this point (white if lit, colored if caustic, dark if blocked)
+    // inShadowRegion: 1.0 if under the cube's footprint, 0.0 if outside
+    vec4 calculateShadowWithColor(vec3 groundPos, vec3 lightDir, vec3 boxHalfSize, float softness, int samples) {
+      // Build tangent frame for disk sampling
+      vec3 up = abs(lightDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 tangent = normalize(cross(up, lightDir));
+      vec3 bitangent = cross(lightDir, tangent);
+      float rotation = shadowRandom(gl_FragCoord.xy) * 6.28318530718;
+
+      // Step 1: Blocker search
+      float blockerDepthSum = 0.0;
+      float blockerCount = 0.0;
+      float searchRadius = softness * 2.0;
+
+      for (int i = 0; i < 16; i++) {
+        vec2 offset = shadowDiskSample(i, 16, rotation) * searchRadius;
+        vec3 sampleDir = normalize(lightDir + tangent * offset.x + bitangent * offset.y);
+        vec2 t = intersectBox(groundPos, sampleDir, boxHalfSize);
+        if (t.x < t.y && t.y > 0.0) {
+          blockerDepthSum += t.x;
+          blockerCount += 1.0;
+        }
+      }
+
+      // No blockers - fully lit area outside shadow
+      if (blockerCount < 0.5) {
+        return vec4(WHITE, 0.0);
+      }
+
+      // Step 2: Calculate penumbra width
+      float avgBlockerDepth = blockerDepthSum / blockerCount;
+      float penumbraWidth = softness * max(0.0, -avgBlockerDepth) / (abs(avgBlockerDepth) + 0.001);
+      penumbraWidth = clamp(penumbraWidth, softness * 0.5, softness * 4.0);
+
+      // Step 3: Sample and categorize light
+      vec3 transmittedColorSum = vec3(0.0);
+      float transmittedWeight = 0.0;
+      float blockedCount = 0.0;
+      float hitCount = 0.0;
+
+      for (int i = 0; i < 64; i++) {
+        if (i >= samples) break;
+
+        vec2 offset = shadowDiskSample(i, samples, rotation) * penumbraWidth;
+        vec3 sampleDir = normalize(lightDir + tangent * offset.x + bitangent * offset.y);
+
+        vec4 result = traceTransmission(groundPos, sampleDir, boxHalfSize);
+
+        if (result.a < 0.0) {
+          // Ray missed cube - this sample is fully lit (shouldn't happen often in shadow region)
+          transmittedColorSum += WHITE;
+          transmittedWeight += 1.0;
+        } else if (result.a > 0.5) {
+          // Ray transmitted through - colored caustic light
+          transmittedColorSum += result.rgb * transmission; // Apply transmission factor
+          transmittedWeight += 1.0;
+          hitCount += 1.0;
+        } else {
+          // Ray was blocked (TIR or absorbed) - umbra
+          blockedCount += 1.0;
+          hitCount += 1.0;
+        }
+      }
+
+      float totalSamples = float(samples);
+
+      // Calculate final illumination
+      // Transmitted light adds colored illumination
+      // Blocked light contributes nothing (only ambient will light these areas)
+      vec3 illumination;
+      if (transmittedWeight > 0.0) {
+        illumination = transmittedColorSum / transmittedWeight;
+        // Blend with blocked portion - blocked areas get no direct light
+        float transmitRatio = transmittedWeight / (transmittedWeight + blockedCount);
+        illumination *= transmitRatio;
+      } else {
+        illumination = vec3(0.0);
+      }
+
+      float inShadowRegion = hitCount / totalSamples;
+      return vec4(illumination, inShadowRegion);
+    }
+
+    // PCSS umbra-only calculation (no color)
     float calculateUmbra(vec3 groundPos, vec3 lightDir, vec3 boxHalfSize, float softness, int samples) {
       // Build tangent frame for disk sampling
       vec3 up = abs(lightDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
@@ -188,27 +350,44 @@ groundMaterial.onBeforeCompile = (shader) => {
     '#include <dithering_fragment>',
     `#include <dithering_fragment>
 
-    if (umbraEnabled && lightIntensity > 0.01) {
+    if ((umbraEnabled || causticsEnabled) && lightIntensity > 0.01) {
       vec3 localPos = (inverseModelMatrix * vec4(vGroundWorldPosition, 1.0)).xyz;
       vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
       vec3 boxHalfSize = vec3(cubeSize * 0.5);
 
-      float shadow = calculateUmbra(localPos, localLightDir, boxHalfSize, shadowSoftness, shadowSamples);
+      // Calculate shadow with color transmission
+      vec4 shadowResult = calculateShadowWithColor(localPos, localLightDir, boxHalfSize, shadowSoftness, shadowSamples);
+      vec3 transmittedLight = shadowResult.rgb; // Colored light that made it through
+      float inShadowRegion = shadowResult.a;    // How much of this point is under the cube
 
-      // Shadow strength based on light vs ambient ratio
-      // More direct light = darker shadows, more ambient = lighter shadows
+      // Light contribution ratios
       float totalLight = lightIntensity + ambientIntensity;
       float directRatio = lightIntensity / max(totalLight, 0.001);
+      float ambientRatio = ambientIntensity / max(totalLight, 0.001);
 
-      // Dark shadow darkens the ground - but ambient light still reaches it
-      float shadowDarkness = shadow * directRatio;
+      if (umbraEnabled && causticsEnabled) {
+        // Full physically-based shadow:
+        // - Outside shadow: full white direct light
+        // - Inside shadow with transmission: colored direct light (caustics)
+        // - Inside shadow blocked: only ambient light (umbra)
 
-      // Apply shadow as multiplicative darkening
-      // At full shadow, we only have ambient contribution
-      float ambientContribution = ambientIntensity / max(totalLight, 0.001);
-      float shadowMultiplier = mix(1.0, ambientContribution, shadowDarkness);
+        // Direct light contribution (white outside, colored/dark inside)
+        vec3 directContribution = mix(WHITE, transmittedLight, inShadowRegion);
 
-      gl_FragColor.rgb *= shadowMultiplier;
+        // Total light = direct + ambient (ambient always present)
+        vec3 totalIllumination = directContribution * directRatio + vec3(ambientRatio);
+
+        gl_FragColor.rgb *= totalIllumination;
+      } else if (umbraEnabled) {
+        // Umbra only: darken shadow regions, no color
+        vec3 directContribution = mix(WHITE, vec3(0.0), inShadowRegion);
+        vec3 totalIllumination = directContribution * directRatio + vec3(ambientRatio);
+        gl_FragColor.rgb *= totalIllumination;
+      } else if (causticsEnabled) {
+        // Caustics only: show colored light without full darkening
+        vec3 directContribution = mix(WHITE, transmittedLight + vec3(0.3), inShadowRegion);
+        gl_FragColor.rgb *= directContribution;
+      }
     }`
   )
 }
@@ -591,8 +770,10 @@ const params = {
   reflectionFade: 2.0,
   // Shadow components
   umbraEnabled: true,
+  causticsEnabled: true,
   shadowSoftness: 0.01,
   shadowSamples: 32,
+  transmission: 0.5,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -737,11 +918,17 @@ const shadowFolder = gui.addFolder('Shadow')
 shadowFolder.add(params, 'umbraEnabled').name('Umbra').onChange((val: boolean) => {
   groundUniforms.umbraEnabled.value = val
 })
+shadowFolder.add(params, 'causticsEnabled').name('Caustics').onChange((val: boolean) => {
+  groundUniforms.causticsEnabled.value = val
+})
 shadowFolder.add(params, 'shadowSoftness', 0.001, 0.05).name('Softness').step(0.001).onChange((val: number) => {
   groundUniforms.shadowSoftness.value = val
 })
 shadowFolder.add(params, 'shadowSamples', 8, 64).name('Samples').step(8).onChange((val: number) => {
   groundUniforms.shadowSamples.value = val
+})
+shadowFolder.add(params, 'transmission', 0.0, 1.0).name('Transmission').step(0.01).onChange((val: number) => {
+  groundUniforms.transmission.value = val
 })
 shadowFolder.open()
 
