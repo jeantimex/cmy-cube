@@ -59,6 +59,10 @@ const groundUniforms = {
   saturation: { value: 1.35 },
   brightness: { value: 1.2 },
   ior: { value: 1.62 },
+  // Shadow components
+  umbraEnabled: { value: true },
+  shadowSoftness: { value: 0.01 },
+  shadowSamples: { value: 32 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
@@ -74,6 +78,9 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.saturation = groundUniforms.saturation
   shader.uniforms.brightness = groundUniforms.brightness
   shader.uniforms.ior = groundUniforms.ior
+  shader.uniforms.umbraEnabled = groundUniforms.umbraEnabled
+  shader.uniforms.shadowSoftness = groundUniforms.shadowSoftness
+  shader.uniforms.shadowSamples = groundUniforms.shadowSamples
 
   shader.vertexShader = shader.vertexShader.replace(
     '#include <common>',
@@ -86,6 +93,124 @@ groundMaterial.onBeforeCompile = (shader) => {
     vGroundWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;`
   )
 
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <common>',
+    `#include <common>
+    uniform vec3 lightDirection;
+    uniform vec3 lightColor;
+    uniform float lightIntensity;
+    uniform float ambientIntensity;
+    uniform float cubeSize;
+    uniform mat4 inverseModelMatrix;
+    uniform bool umbraEnabled;
+    uniform float shadowSoftness;
+    uniform int shadowSamples;
+    varying vec3 vGroundWorldPosition;
+
+    // PCSS helper functions
+    float shadowRandom(vec2 seed) {
+      return fract(sin(dot(seed, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    vec2 shadowDiskSample(int index, int totalSamples, float rotation) {
+      float goldenAngle = 2.399963229728653;
+      float r = sqrt((float(index) + 0.5) / float(totalSamples));
+      float theta = float(index) * goldenAngle + rotation;
+      return vec2(cos(theta), sin(theta)) * r;
+    }
+
+    // Ray-box intersection for shadow
+    vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
+      vec3 invDir = 1.0 / rayDir;
+      vec3 t1 = (-boxHalfSize - rayOrigin) * invDir;
+      vec3 t2 = (boxHalfSize - rayOrigin) * invDir;
+      vec3 tMin = min(t1, t2);
+      vec3 tMax = max(t1, t2);
+      float tNear = max(max(tMin.x, tMin.y), tMin.z);
+      float tFar = min(min(tMax.x, tMax.y), tMax.z);
+      return vec2(tNear, tFar);
+    }
+
+    // PCSS dark shadow calculation
+    float calculateUmbra(vec3 groundPos, vec3 lightDir, vec3 boxHalfSize, float softness, int samples) {
+      // Build tangent frame for disk sampling
+      vec3 up = abs(lightDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 tangent = normalize(cross(up, lightDir));
+      vec3 bitangent = cross(lightDir, tangent);
+      float rotation = shadowRandom(gl_FragCoord.xy) * 6.28318530718;
+
+      // Step 1: Blocker search - find average blocker depth
+      float blockerDepthSum = 0.0;
+      float blockerCount = 0.0;
+      float searchRadius = softness * 2.0;
+
+      for (int i = 0; i < 16; i++) {
+        vec2 offset = shadowDiskSample(i, 16, rotation) * searchRadius;
+        vec3 sampleDir = normalize(lightDir + tangent * offset.x + bitangent * offset.y);
+
+        vec2 t = intersectBox(groundPos, sampleDir, boxHalfSize);
+        if (t.x < t.y && t.y > 0.0) {
+          blockerDepthSum += t.x;
+          blockerCount += 1.0;
+        }
+      }
+
+      // No blockers found - fully lit
+      if (blockerCount < 0.5) {
+        return 0.0;
+      }
+
+      // Step 2: Calculate penumbra width based on blocker depth
+      float avgBlockerDepth = blockerDepthSum / blockerCount;
+      // Penumbra grows with distance from blocker (contact hardening)
+      float penumbraWidth = softness * max(0.0, -avgBlockerDepth) / (abs(avgBlockerDepth) + 0.001);
+      penumbraWidth = clamp(penumbraWidth, softness * 0.5, softness * 4.0);
+
+      // Step 3: PCF with calculated penumbra
+      float shadowSum = 0.0;
+      for (int i = 0; i < 64; i++) {
+        if (i >= samples) break;
+
+        vec2 offset = shadowDiskSample(i, samples, rotation) * penumbraWidth;
+        vec3 sampleDir = normalize(lightDir + tangent * offset.x + bitangent * offset.y);
+
+        vec2 t = intersectBox(groundPos, sampleDir, boxHalfSize);
+        if (t.x < t.y && t.y > 0.0) {
+          shadowSum += 1.0;
+        }
+      }
+
+      return shadowSum / float(samples);
+    }`
+  )
+
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <dithering_fragment>',
+    `#include <dithering_fragment>
+
+    if (umbraEnabled && lightIntensity > 0.01) {
+      vec3 localPos = (inverseModelMatrix * vec4(vGroundWorldPosition, 1.0)).xyz;
+      vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
+      vec3 boxHalfSize = vec3(cubeSize * 0.5);
+
+      float shadow = calculateUmbra(localPos, localLightDir, boxHalfSize, shadowSoftness, shadowSamples);
+
+      // Shadow strength based on light vs ambient ratio
+      // More direct light = darker shadows, more ambient = lighter shadows
+      float totalLight = lightIntensity + ambientIntensity;
+      float directRatio = lightIntensity / max(totalLight, 0.001);
+
+      // Dark shadow darkens the ground - but ambient light still reaches it
+      float shadowDarkness = shadow * directRatio;
+
+      // Apply shadow as multiplicative darkening
+      // At full shadow, we only have ambient contribution
+      float ambientContribution = ambientIntensity / max(totalLight, 0.001);
+      float shadowMultiplier = mix(1.0, ambientContribution, shadowDarkness);
+
+      gl_FragColor.rgb *= shadowMultiplier;
+    }`
+  )
 }
 
 const ground = new THREE.Mesh(
@@ -464,6 +589,10 @@ const params = {
   reflectionEnabled: true,
   reflectionOpacity: 0.1,
   reflectionFade: 2.0,
+  // Shadow components
+  umbraEnabled: true,
+  shadowSoftness: 0.01,
+  shadowSamples: 32,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -603,6 +732,18 @@ lightAppearanceFolder.add(params, 'lightBrightness', 0, 8).name('Brightness').st
 lightAppearanceFolder.add(params, 'lightWarmth', 0, 1).name('Warmth').step(0.01).onChange(updateLightColor)
 lightAppearanceFolder.add(params, 'ambientBrightness', 0, 6).name('Ambient').step(0.1).onChange(updateAmbientBrightness)
 lightAppearanceFolder.open()
+
+const shadowFolder = gui.addFolder('Shadow')
+shadowFolder.add(params, 'umbraEnabled').name('Umbra').onChange((val: boolean) => {
+  groundUniforms.umbraEnabled.value = val
+})
+shadowFolder.add(params, 'shadowSoftness', 0.001, 0.05).name('Softness').step(0.001).onChange((val: number) => {
+  groundUniforms.shadowSoftness.value = val
+})
+shadowFolder.add(params, 'shadowSamples', 8, 64).name('Samples').step(8).onChange((val: number) => {
+  groundUniforms.shadowSamples.value = val
+})
+shadowFolder.open()
 
 const reflectionFolder = gui.addFolder('Ground Reflection')
 reflectionFolder.add(params, 'reflectionEnabled').name('Enabled').onChange((val: boolean) => {
