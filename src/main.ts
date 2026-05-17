@@ -229,7 +229,7 @@ const groundUniforms = {
   outerCausticShadowMix: { value: 0.2 },
   // New caustic shadow system
   causticShadowEnabled: { value: true },
-  causticSoftness: { value: 0.02 },
+  causticSoftness: { value: 0.04 },
   causticIntensity: { value: 1.0 },
   causticSamples: { value: 32 },
 }
@@ -492,6 +492,11 @@ groundMaterial.onBeforeCompile = (shader) => {
       float totalWeight = 0.0;
       float hitCount = 0.0;
 
+      // Shadow darkness is relative to light vs ambient ratio
+      // More direct light = darker shadows, more ambient = lighter shadows
+      float ambientRatio = ambientIntensity / (ambientIntensity + lightIntensity);
+      vec3 shadowBase = vec3(ambientRatio); // Base color for blocked light (ambient only)
+
       for (int i = 0; i < 64; i++) {
         if (i >= samples) break;
 
@@ -502,7 +507,7 @@ groundMaterial.onBeforeCompile = (shader) => {
         // Check if ray hits cube
         vec2 t = intersectBox(groundPos, sampleDir, boxHalfSize);
         if (t.x > t.y || t.y < 0.0) {
-          // Ray misses cube - full light
+          // Ray misses cube - full white light
           totalColor += WHITE;
           totalWeight += 1.0;
           continue;
@@ -513,16 +518,16 @@ groundMaterial.onBeforeCompile = (shader) => {
         // Entry point and normal
         vec3 entryPoint = groundPos + sampleDir * t.x;
         vec3 entryNormal = getFaceNormal(entryPoint, boxHalfSize);
-        vec3 entryColor = mix(WHITE, getFaceColor(entryNormal), absorptionStrength);
+        vec3 entryColor = getFaceColor(entryNormal);
 
         // Refract into cube
         float eta = 1.0 / refractiveIndex;
         vec3 refractedDir = refract(sampleDir, entryNormal, eta);
 
-        // Check for total internal reflection at entry (rare at typical angles)
+        // Check for total internal reflection at entry
         if (length(refractedDir) < 0.001) {
-          // TIR - dark shadow
-          totalColor += vec3(0.0);
+          // TIR at entry - only ambient light reaches here
+          totalColor += shadowBase;
           totalWeight += 1.0;
           continue;
         }
@@ -532,30 +537,27 @@ groundMaterial.onBeforeCompile = (shader) => {
         vec2 tInner = intersectBox(insideOrigin, refractedDir, boxHalfSize);
         vec3 exitPoint = insideOrigin + refractedDir * tInner.y;
         vec3 exitNormal = getFaceNormal(exitPoint, boxHalfSize);
-        vec3 exitColor = mix(WHITE, getFaceColor(exitNormal), absorptionStrength);
+        vec3 exitColor = getFaceColor(exitNormal);
 
         // Refract out of cube
         vec3 exitDir = refract(refractedDir, -exitNormal, refractiveIndex);
 
         // Check for TIR at exit
         if (length(exitDir) < 0.001) {
-          // Light trapped by TIR - dark shadow
-          totalColor += vec3(0.0);
+          // Light trapped by TIR - only ambient light
+          totalColor += shadowBase;
           totalWeight += 1.0;
           continue;
         }
 
-        // Check alignment of exit ray with original light direction
-        // This determines how much light actually reaches this point
-        float alignment = dot(normalize(exitDir), normalize(sampleDir));
-        float alignmentFactor = smoothstep(0.5, 0.98, alignment);
-
         // Subtractive color mixing: entry × exit
+        // Blend between full transmission and ambient-influenced transmission
         vec3 transmission = entryColor * exitColor;
-        transmission = saturateColor(transmission, saturation);
 
-        // Weight by alignment - misaligned rays contribute less
-        totalColor += transmission * alignmentFactor;
+        // Add ambient contribution to transmission to prevent pure black
+        transmission = mix(shadowBase, transmission + shadowBase * 0.5, 0.8);
+
+        totalColor += transmission;
         totalWeight += 1.0;
       }
 
@@ -578,12 +580,22 @@ groundMaterial.onBeforeCompile = (shader) => {
     vec3 boxHalfSize = vec3(cubeSize * 0.5);
 
     // New physics-based caustic shadow
-    if (causticShadowEnabled) {
+    if (causticShadowEnabled && lightIntensity > 0.01) {
       vec4 caustic = traceCausticShadow(localPos, localLightDir, boxHalfSize, ior, causticSoftness, causticSamples);
 
-      // Apply transmission color with intensity control
-      vec3 transmission = caustic.rgb * mix(WHITE, lightColor, 0.5) * brightness;
-      vec3 shadowResult = mix(WHITE, transmission * causticIntensity, caustic.a);
+      // Tint with light color
+      vec3 transmission = caustic.rgb * mix(WHITE, lightColor, 0.3);
+
+      // Apply intensity control
+      transmission *= causticIntensity;
+
+      // Mix between full light and transmitted light based on hit ratio
+      vec3 shadowResult = mix(WHITE, transmission, caustic.a);
+
+      // Fade out shadow effect as light intensity decreases
+      // No light = no shadow
+      float shadowFade = smoothstep(0.0, 2.0, lightIntensity);
+      shadowResult = mix(WHITE, shadowResult, shadowFade);
 
       gl_FragColor.rgb *= shadowResult;
     }
@@ -931,7 +943,9 @@ vec3 groundPos = vec3(vWorldPosition.x, -0.99, vWorldPosition.z);
 float shadow = calcShadow(groundPos, lightDirection, mainCubeInverseMatrix, cubeSize * 0.5);
 vec3 shadowedColor = color * (1.0 - shadow * shadowOpacity);
 
-float finalAlpha = alpha * reflectionOpacity * fadeOut;
+// Fade out reflection when light intensity is low
+float lightFade = smoothstep(0.0, 2.0, lightIntensity);
+float finalAlpha = alpha * reflectionOpacity * fadeOut * lightFade;
 gl_FragColor = vec4(shadowedColor, finalAlpha);`
 )
 
@@ -1003,7 +1017,7 @@ const params = {
   edgeAlpha: 0.01,
   lightAzimuthDegrees: 135,
   lightElevationDegrees: 35,
-  lightDistance: 3,
+  lightDistance: 5,
   lightBrightness: directionalLight.intensity,
   lightWarmth: 0.5,
   ambientBrightness: hemiLight.intensity,
@@ -1020,7 +1034,7 @@ const params = {
   reflectionShadowOpacity: 0.5,
   // Caustic shadow params
   causticShadowEnabled: true,
-  causticSoftness: 0.02,
+  causticSoftness: 0.04,
   causticIntensity: 1.0,
   causticSamples: 32,
 }
