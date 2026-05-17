@@ -3,166 +3,6 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import GUI from 'lil-gui'
 
-const installPCSSShadows = () => {
-  THREE.ShaderChunk.shadowmap_pars_fragment = THREE.ShaderChunk.shadowmap_pars_fragment.replace(
-    `#else // SHADOWMAP_TYPE_BASIC
-
-		float getShadow( sampler2D shadowMap, vec2 shadowMapSize, float shadowIntensity, float shadowBias, float shadowRadius, vec4 shadowCoord ) {
-
-			float shadow = 1.0;
-
-			shadowCoord.xyz /= shadowCoord.w;
-
-			#ifdef USE_REVERSED_DEPTH_BUFFER
-
-				shadowCoord.z -= shadowBias;
-
-			#else
-
-				shadowCoord.z += shadowBias;
-
-			#endif
-
-			bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
-			bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
-
-			if ( frustumTest ) {
-
-				float depth = texture2D( shadowMap, shadowCoord.xy ).r;
-
-				#ifdef USE_REVERSED_DEPTH_BUFFER
-
-					shadow = step( depth, shadowCoord.z );
-
-				#else
-
-					shadow = step( shadowCoord.z, depth );
-
-				#endif
-
-			}
-
-			return mix( 1.0, shadow, shadowIntensity );
-
-		}`,
-    `#else // SHADOWMAP_TYPE_BASIC
-
-		float pcssRandom( vec2 seed ) {
-
-			return fract( sin( dot( seed, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
-
-		}
-
-		vec2 pcssDiskSample( int sampleIndex, int samplesCount, float angle ) {
-
-			const float goldenAngle = 2.399963229728653;
-			float radius = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
-			float theta = float( sampleIndex ) * goldenAngle + angle;
-			return vec2( cos( theta ), sin( theta ) ) * radius;
-
-		}
-
-		float getShadow( sampler2D shadowMap, vec2 shadowMapSize, float shadowIntensity, float shadowBias, float shadowRadius, vec4 shadowCoord ) {
-
-			float shadow = 1.0;
-
-			shadowCoord.xyz /= shadowCoord.w;
-
-			#ifdef USE_REVERSED_DEPTH_BUFFER
-
-				shadowCoord.z -= shadowBias;
-
-			#else
-
-				shadowCoord.z += shadowBias;
-
-			#endif
-
-			bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
-			bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
-
-			if ( frustumTest ) {
-
-				vec2 texelSize = vec2( 1.0 ) / shadowMapSize;
-				float lightSize = max( shadowRadius, 0.001 );
-				float searchRadius = lightSize * texelSize.x * 7.0;
-				float rotation = pcssRandom( gl_FragCoord.xy ) * PI2;
-				float blockerDepth = 0.0;
-				float blockers = 0.0;
-
-				for ( int i = 0; i < 16; i ++ ) {
-
-					float sampleDepth = texture2D( shadowMap, shadowCoord.xy + pcssDiskSample( i, 16, rotation ) * searchRadius ).r;
-
-					#ifdef USE_REVERSED_DEPTH_BUFFER
-
-						if ( sampleDepth > shadowCoord.z ) {
-
-							blockerDepth += sampleDepth;
-							blockers += 1.0;
-
-						}
-
-					#else
-
-						if ( sampleDepth < shadowCoord.z ) {
-
-							blockerDepth += sampleDepth;
-							blockers += 1.0;
-
-						}
-
-					#endif
-
-				}
-
-				if ( blockers > 0.0 ) {
-
-					float averageBlockerDepth = blockerDepth / blockers;
-
-					#ifdef USE_REVERSED_DEPTH_BUFFER
-
-						float penumbra = ( averageBlockerDepth - shadowCoord.z ) / max( averageBlockerDepth, 0.0001 );
-
-					#else
-
-						float penumbra = ( shadowCoord.z - averageBlockerDepth ) / max( averageBlockerDepth, 0.0001 );
-
-					#endif
-
-					float filterRadius = lightSize * ( 0.85 + penumbra * 18.0 ) * texelSize.x;
-					float sum = 0.0;
-
-					for ( int i = 0; i < 32; i ++ ) {
-
-						float sampleDepth = texture2D( shadowMap, shadowCoord.xy + pcssDiskSample( i, 32, rotation ) * filterRadius ).r;
-
-						#ifdef USE_REVERSED_DEPTH_BUFFER
-
-							sum += step( sampleDepth, shadowCoord.z );
-
-						#else
-
-							sum += step( shadowCoord.z, sampleDepth );
-
-						#endif
-
-					}
-
-					shadow = sum / 32.0;
-
-				}
-
-			}
-
-			return mix( 1.0, shadow, shadowIntensity );
-
-		}`
-  )
-}
-
-installPCSSShadows()
-
 const app = document.querySelector<HTMLDivElement>('#app')
 
 if (!app) {
@@ -219,11 +59,6 @@ const groundUniforms = {
   saturation: { value: 1.35 },
   brightness: { value: 1.2 },
   ior: { value: 1.62 },
-  // Caustic shadow system
-  causticShadowEnabled: { value: true },
-  causticSoftness: { value: 0.04 },
-  causticIntensity: { value: 1.0 },
-  causticSamples: { value: 32 },
 }
 
 const groundMaterial = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, depthWrite: false })
@@ -239,10 +74,6 @@ groundMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.saturation = groundUniforms.saturation
   shader.uniforms.brightness = groundUniforms.brightness
   shader.uniforms.ior = groundUniforms.ior
-  shader.uniforms.causticShadowEnabled = groundUniforms.causticShadowEnabled
-  shader.uniforms.causticSoftness = groundUniforms.causticSoftness
-  shader.uniforms.causticIntensity = groundUniforms.causticIntensity
-  shader.uniforms.causticSamples = groundUniforms.causticSamples
 
   shader.vertexShader = shader.vertexShader.replace(
     '#include <common>',
@@ -255,204 +86,6 @@ groundMaterial.onBeforeCompile = (shader) => {
     vGroundWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;`
   )
 
-  shader.fragmentShader = shader.fragmentShader.replace(
-    '#include <common>',
-    `#include <common>
-    uniform vec3 lightDirection;
-    uniform vec3 lightColor;
-    uniform float lightIntensity;
-    uniform float ambientIntensity;
-    uniform float cubeSize;
-    uniform mat4 inverseModelMatrix;
-    uniform float absorptionStrength;
-    uniform float colorDarkness;
-    uniform float saturation;
-    uniform float brightness;
-    uniform float ior;
-    uniform bool causticShadowEnabled;
-    uniform float causticSoftness;
-    uniform float causticIntensity;
-    uniform int causticSamples;
-    varying vec3 vGroundWorldPosition;
-
-    const vec3 CYAN = vec3(0.0, 0.92, 1.0);
-    const vec3 MAGENTA = vec3(1.0, 0.05, 0.9);
-    const vec3 YELLOW = vec3(1.0, 0.95, 0.0);
-    const vec3 DEEP_CYAN = vec3(0.0, 0.58, 0.72);
-    const vec3 DEEP_MAGENTA = vec3(0.72, 0.0, 0.48);
-    const vec3 DEEP_YELLOW = vec3(0.96, 0.78, 0.0);
-    const vec3 WHITE = vec3(1.0, 1.0, 1.0);
-
-    vec2 intersectBox(vec3 rayOrigin, vec3 rayDir, vec3 boxHalfSize) {
-      vec3 invDir = 1.0 / rayDir;
-      vec3 t1 = (-boxHalfSize - rayOrigin) * invDir;
-      vec3 t2 = (boxHalfSize - rayOrigin) * invDir;
-      vec3 tMin = min(t1, t2);
-      vec3 tMax = max(t1, t2);
-      float tNear = max(max(tMin.x, tMin.y), tMin.z);
-      float tFar = min(min(tMax.x, tMax.y), tMax.z);
-      return vec2(tNear, tFar);
-    }
-
-    vec3 getFaceNormal(vec3 hitPoint, vec3 boxHalfSize) {
-      vec3 p = hitPoint / boxHalfSize;
-      vec3 absP = abs(p);
-      float maxComp = max(max(absP.x, absP.y), absP.z);
-      if (absP.x >= maxComp - 0.001) return vec3(sign(p.x), 0.0, 0.0);
-      if (absP.y >= maxComp - 0.001) return vec3(0.0, sign(p.y), 0.0);
-      return vec3(0.0, 0.0, sign(p.z));
-    }
-
-    vec3 getFaceColor(vec3 normal) {
-      vec3 absNormal = abs(normal);
-      vec3 faceColor = CYAN;
-      vec3 deepFaceColor = DEEP_CYAN;
-      if (absNormal.x > 0.5) {
-        faceColor = YELLOW;
-        deepFaceColor = DEEP_YELLOW;
-      }
-      if (absNormal.y > 0.5) {
-        faceColor = MAGENTA;
-        deepFaceColor = DEEP_MAGENTA;
-      }
-      return mix(faceColor, deepFaceColor, colorDarkness);
-    }
-
-    vec3 saturateColor(vec3 color, float amount) {
-      float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      return mix(vec3(luminance), color, amount);
-    }
-
-    float shadowNoise(vec2 seed) {
-      return fract(sin(dot(seed, vec2(12.9898, 78.233))) * 43758.5453);
-    }
-
-    vec2 diskSample(int sampleIndex, int samplesCount, float rotation) {
-      const float goldenAngle = 2.399963229728653;
-      float radius = sqrt((float(sampleIndex) + 0.5) / float(samplesCount));
-      float theta = float(sampleIndex) * goldenAngle + rotation;
-      return vec2(cos(theta), sin(theta)) * radius;
-    }
-
-    // Physics-based caustic shadow: traces refracted light path through cube
-    vec4 traceCausticShadow(vec3 groundPos, vec3 lightDir, vec3 boxHalfSize, float refractiveIndex, float softness, int samples) {
-      vec3 up = abs(lightDir.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-      vec3 tangent = normalize(cross(up, lightDir));
-      vec3 bitangent = cross(lightDir, tangent);
-      float rotation = shadowNoise(gl_FragCoord.xy) * 6.28318530718;
-
-      vec3 totalColor = vec3(0.0);
-      float totalWeight = 0.0;
-      float hitCount = 0.0;
-
-      // Shadow darkness is relative to light vs ambient ratio
-      // More direct light = darker shadows, more ambient = lighter shadows
-      float ambientRatio = ambientIntensity / (ambientIntensity + lightIntensity);
-      vec3 shadowBase = vec3(ambientRatio); // Base color for blocked light (ambient only)
-
-      for (int i = 0; i < 64; i++) {
-        if (i >= samples) break;
-
-        // Sample direction with jitter for soft shadows
-        vec2 disk = diskSample(i, samples, rotation) * softness;
-        vec3 sampleDir = normalize(lightDir + tangent * disk.x + bitangent * disk.y);
-
-        // Check if ray hits cube
-        vec2 t = intersectBox(groundPos, sampleDir, boxHalfSize);
-        if (t.x > t.y || t.y < 0.0) {
-          // Ray misses cube - full white light
-          totalColor += WHITE;
-          totalWeight += 1.0;
-          continue;
-        }
-
-        hitCount += 1.0;
-
-        // Entry point and normal
-        vec3 entryPoint = groundPos + sampleDir * t.x;
-        vec3 entryNormal = getFaceNormal(entryPoint, boxHalfSize);
-        vec3 entryColor = getFaceColor(entryNormal);
-
-        // Refract into cube
-        float eta = 1.0 / refractiveIndex;
-        vec3 refractedDir = refract(sampleDir, entryNormal, eta);
-
-        // Check for total internal reflection at entry
-        if (length(refractedDir) < 0.001) {
-          // TIR at entry - only ambient light reaches here
-          totalColor += shadowBase;
-          totalWeight += 1.0;
-          continue;
-        }
-
-        // Trace through cube to find exit
-        vec3 insideOrigin = entryPoint + refractedDir * 0.001;
-        vec2 tInner = intersectBox(insideOrigin, refractedDir, boxHalfSize);
-        vec3 exitPoint = insideOrigin + refractedDir * tInner.y;
-        vec3 exitNormal = getFaceNormal(exitPoint, boxHalfSize);
-        vec3 exitColor = getFaceColor(exitNormal);
-
-        // Refract out of cube
-        vec3 exitDir = refract(refractedDir, -exitNormal, refractiveIndex);
-
-        // Check for TIR at exit
-        if (length(exitDir) < 0.001) {
-          // Light trapped by TIR - only ambient light
-          totalColor += shadowBase;
-          totalWeight += 1.0;
-          continue;
-        }
-
-        // Subtractive color mixing: entry × exit
-        // Blend between full transmission and ambient-influenced transmission
-        vec3 transmission = entryColor * exitColor;
-
-        // Add ambient contribution to transmission to prevent pure black
-        transmission = mix(shadowBase, transmission + shadowBase * 0.5, 0.8);
-
-        totalColor += transmission;
-        totalWeight += 1.0;
-      }
-
-      if (totalWeight <= 0.0) {
-        return vec4(WHITE, 0.0);
-      }
-
-      vec3 avgColor = totalColor / totalWeight;
-      float shadowStrength = hitCount / totalWeight;
-
-      return vec4(avgColor, shadowStrength);
-    }`
-  )
-
-  shader.fragmentShader = shader.fragmentShader.replace(
-    '#include <dithering_fragment>',
-    `#include <dithering_fragment>
-    vec3 localPos = (inverseModelMatrix * vec4(vGroundWorldPosition, 1.0)).xyz;
-    vec3 localLightDir = normalize((inverseModelMatrix * vec4(lightDirection, 0.0)).xyz);
-    vec3 boxHalfSize = vec3(cubeSize * 0.5);
-
-    // Physics-based caustic shadow
-    if (causticShadowEnabled && lightIntensity > 0.01) {
-      vec4 caustic = traceCausticShadow(localPos, localLightDir, boxHalfSize, ior, causticSoftness, causticSamples);
-
-      // Tint with light color
-      vec3 transmission = caustic.rgb * mix(WHITE, lightColor, 0.3);
-
-      // Apply intensity control
-      transmission *= causticIntensity;
-
-      // Mix between full light and transmitted light based on hit ratio
-      vec3 shadowResult = mix(WHITE, transmission, caustic.a);
-
-      // Fade out shadow effect as light intensity decreases
-      // No light = no shadow
-      float shadowFade = smoothstep(0.0, 2.0, lightIntensity);
-      shadowResult = mix(WHITE, shadowResult, shadowFade);
-
-      gl_FragColor.rgb *= shadowResult;
-    }`
-  )
 }
 
 const ground = new THREE.Mesh(
@@ -740,30 +373,11 @@ const cube = new THREE.Mesh(
 cube.castShadow = false
 scene.add(cube)
 
-// Reflection cube - mirrored below the ground plane with shadow overlay
+// Reflection cube - mirrored below the ground plane
 const reflectionFragmentShader = fragmentShader.replace(
   'void main() {',
   `uniform float reflectionOpacity;
 uniform float reflectionFade;
-uniform mat4 mainCubeInverseMatrix;
-uniform float shadowOpacity;
-
-float calcShadow(vec3 worldPos, vec3 lightDir, mat4 invMatrix, float cubeHalfSize) {
-  vec3 localPos = (invMatrix * vec4(worldPos, 1.0)).xyz;
-  vec3 localLightDir = normalize((invMatrix * vec4(lightDir, 0.0)).xyz);
-  vec3 boxHalfSize = vec3(cubeHalfSize - 0.02);
-
-  vec3 invDir = 1.0 / localLightDir;
-  vec3 t1 = (-boxHalfSize - localPos) * invDir;
-  vec3 t2 = (boxHalfSize - localPos) * invDir;
-  vec3 tMin = min(t1, t2);
-  vec3 tMax = max(t1, t2);
-  float tNear = max(max(tMin.x, tMin.y), tMin.z);
-  float tFar = min(min(tMax.x, tMax.y), tMax.z);
-
-  float inShadow = (tNear < tFar - 0.01 && tFar > 0.01) ? 1.0 : 0.0;
-  return inShadow;
-}
 
 void main() {`
 ).replace(
@@ -771,16 +385,10 @@ void main() {`
   `float distFromGround = abs(vWorldPosition.y + 1.0);
 float fadeOut = 1.0 - smoothstep(0.0, reflectionFade, distFromGround);
 
-// Calculate shadow from the main cube onto this reflection point
-// Use ground plane position (y=-1) with same x,z as the reflection point
-vec3 groundPos = vec3(vWorldPosition.x, -0.99, vWorldPosition.z);
-float shadow = calcShadow(groundPos, lightDirection, mainCubeInverseMatrix, cubeSize * 0.5);
-vec3 shadowedColor = color * (1.0 - shadow * shadowOpacity);
-
 // Fade out reflection when light intensity is low
 float lightFade = smoothstep(0.0, 2.0, lightIntensity);
 float finalAlpha = alpha * reflectionOpacity * fadeOut * lightFade;
-gl_FragColor = vec4(shadowedColor, finalAlpha);`
+gl_FragColor = vec4(color, finalAlpha);`
 )
 
 const reflectionMaterial = new THREE.ShaderMaterial({
@@ -809,8 +417,6 @@ const reflectionMaterial = new THREE.ShaderMaterial({
     edgeAlpha: { value: 0.01 },
     reflectionOpacity: { value: 0.1 },
     reflectionFade: { value: 2.0 },
-    mainCubeInverseMatrix: { value: new THREE.Matrix4() },
-    shadowOpacity: { value: 0.5 },
   },
   vertexShader,
   fragmentShader: reflectionFragmentShader,
@@ -858,12 +464,6 @@ const params = {
   reflectionEnabled: true,
   reflectionOpacity: 0.1,
   reflectionFade: 2.0,
-  reflectionShadowOpacity: 0.5,
-  // Caustic shadow params
-  causticShadowEnabled: true,
-  causticSoftness: 0.04,
-  causticIntensity: 1.0,
-  causticSamples: 32,
 }
 
 const rotationFolder = gui.addFolder('Rotation')
@@ -1004,21 +604,6 @@ lightAppearanceFolder.add(params, 'lightWarmth', 0, 1).name('Warmth').step(0.01)
 lightAppearanceFolder.add(params, 'ambientBrightness', 0, 6).name('Ambient').step(0.1).onChange(updateAmbientBrightness)
 lightAppearanceFolder.open()
 
-const causticFolder = gui.addFolder('Caustic Shadow')
-causticFolder.add(params, 'causticShadowEnabled').name('Enabled').onChange((val: boolean) => {
-  groundUniforms.causticShadowEnabled.value = val
-})
-causticFolder.add(params, 'causticSoftness', 0.0, 0.1).name('Softness').step(0.005).onChange((val: number) => {
-  groundUniforms.causticSoftness.value = val
-})
-causticFolder.add(params, 'causticIntensity', 0.0, 2.0).name('Intensity').step(0.05).onChange((val: number) => {
-  groundUniforms.causticIntensity.value = val
-})
-causticFolder.add(params, 'causticSamples', 8, 64).name('Samples').step(8).onChange((val: number) => {
-  groundUniforms.causticSamples.value = val
-})
-causticFolder.open()
-
 const reflectionFolder = gui.addFolder('Ground Reflection')
 reflectionFolder.add(params, 'reflectionEnabled').name('Enabled').onChange((val: boolean) => {
   reflectionCube.visible = val
@@ -1028,9 +613,6 @@ reflectionFolder.add(params, 'reflectionOpacity', 0.0, 1.0).name('Opacity').step
 })
 reflectionFolder.add(params, 'reflectionFade', 0.5, 4.0).name('Fade Distance').step(0.1).onChange((val: number) => {
   reflectionMaterial.uniforms.reflectionFade.value = val
-})
-reflectionFolder.add(params, 'reflectionShadowOpacity', 0.0, 1.0).name('Shadow').step(0.01).onChange((val: number) => {
-  reflectionMaterial.uniforms.shadowOpacity.value = val
 })
 reflectionFolder.open()
 
@@ -1069,7 +651,6 @@ function animate() {
   const reflectionInvMatrix = reflectionCube.matrixWorld.clone().invert()
   reflectionMaterial.uniforms.cameraPos.value.copy(camera.position)
   reflectionMaterial.uniforms.inverseModelMatrix.value.copy(reflectionInvMatrix)
-  reflectionMaterial.uniforms.mainCubeInverseMatrix.value.copy(invMatrix)
   reflectionMaterial.uniforms.lightDirection.value.copy(cubeMaterial.uniforms.lightDirection.value)
   reflectionMaterial.uniforms.lightColor.value.copy(cubeMaterial.uniforms.lightColor.value)
   reflectionMaterial.uniforms.lightIntensity.value = cubeMaterial.uniforms.lightIntensity.value
